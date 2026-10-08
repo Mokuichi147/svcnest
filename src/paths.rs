@@ -199,8 +199,76 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     }
     temp.write_all(bytes)?;
     temp.as_file().sync_all()?;
+    #[cfg(windows)]
+    persist_windows(temp, path)?;
+    #[cfg(not(windows))]
     temp.persist(path).map_err(|e| e.error)?;
     #[cfg(unix)]
     File::open(parent)?.sync_all()?;
     Ok(())
+}
+
+#[cfg(windows)]
+fn persist_windows(temp: tempfile::NamedTempFile, path: &Path) -> Result<()> {
+    use std::{os::windows::ffi::OsStrExt, ptr::null, thread, time::Duration};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_NORMAL, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+        ReplaceFileW, SetFileAttributesW,
+    };
+
+    // NamedTempFile は FILE_FLAG_DELETE_ON_CLOSE で作られるため、置換 API を呼ぶ前に
+    // ファイルハンドルを閉じる。ReplaceFileW は既存ファイルを一つの操作で置換するので、
+    // fs::rename のように読者から一瞬だけ対象が消える窓を作らない。
+    let temp = temp.into_temp_path();
+    let wide = |value: &Path| {
+        value
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>()
+    };
+    let temporary = wide(&temp);
+    let destination = wide(path);
+    if unsafe { SetFileAttributesW(temporary.as_ptr(), FILE_ATTRIBUTE_NORMAL) } == 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+
+    let mut last_error = None;
+    for _ in 0..500 {
+        let replaced = if path.is_file() {
+            unsafe {
+                ReplaceFileW(
+                    destination.as_ptr(),
+                    temporary.as_ptr(),
+                    null(),
+                    0,
+                    null(),
+                    null(),
+                )
+            }
+        } else {
+            unsafe {
+                MoveFileExW(
+                    temporary.as_ptr(),
+                    destination.as_ptr(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+                )
+            }
+        };
+        if replaced != 0 {
+            // 置換後の一時パスは存在しない。TempPath の cleanup は不要であり、
+            // 念のため名前を解放して終了する。
+            std::mem::forget(temp);
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if !matches!(error.raw_os_error(), Some(5 | 32 | 33)) {
+            return Err(error.into());
+        }
+        last_error = Some(error);
+        thread::sleep(Duration::from_millis(2));
+    }
+    Err(last_error
+        .unwrap_or_else(|| std::io::Error::other("Windows file replacement timed out"))
+        .into())
 }
