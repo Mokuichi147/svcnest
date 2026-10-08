@@ -187,19 +187,7 @@ fn atomic_updates_are_always_readable() {
     let reader_path = path.clone();
     let reader = std::thread::spawn(move || {
         for _ in 0..2000 {
-            let bytes = loop {
-                match fs::read(&reader_path) {
-                    Ok(bytes) => break bytes,
-                    // Windows may briefly reject a reader while ReplaceFileW is
-                    // committing the replacement metadata. Retry the open; a
-                    // successful read must still contain a complete JSON generation.
-                    #[cfg(windows)]
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        std::thread::yield_now();
-                    }
-                    Err(error) => panic!("cannot read atomic file: {error}"),
-                }
-            };
+            let bytes = read_atomic(&reader_path);
             let _: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         }
     });
@@ -207,6 +195,27 @@ fn atomic_updates_are_always_readable() {
         atomic_write(&path, format!("{{\"generation\":{index}}}").as_bytes()).unwrap();
     }
     reader.join().unwrap();
+}
+
+#[cfg(windows)]
+fn read_atomic(path: &Path) -> Vec<u8> {
+    for _ in 0..10_000 {
+        match fs::read(path) {
+            Ok(bytes) => return bytes,
+            // Windows may briefly reject a reader while ReplaceFileW is committing
+            // replacement metadata. A successful read must still be complete JSON.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::thread::yield_now();
+            }
+            Err(error) => panic!("cannot read atomic file: {error}"),
+        }
+    }
+    panic!("atomic file remained unavailable while being replaced");
+}
+
+#[cfg(not(windows))]
+fn read_atomic(path: &Path) -> Vec<u8> {
+    fs::read(path).unwrap()
 }
 
 #[test]
