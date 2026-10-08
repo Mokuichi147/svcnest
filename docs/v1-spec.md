@@ -277,6 +277,10 @@ powershell -Command "..."
 
 を登録する。
 
+Windows の `.bat` / `.cmd` / `.ps1` は直接登録できる。一般のバッチは Windows 標準の `cmd.exe` を使い、引数のエスケープを Rust 標準ライブラリに委ねる。標準の Node.js ランチャーは実体の Node.js と JavaScript へ解決する。
+
+`.ps1` は `--shell` で指定した PowerShell、登録元の直近のシェルが PowerShell の場合の実体、登録時 PATH の `pwsh.exe` / `powershell.exe`、Windows 標準の PowerShell の順で解決する。実行ファイルとスクリプトの絶対パス、`-NoLogo -NoProfile -File` を保存し、実行時には元の argv の引数を渡す。セッション限定 `PSExecutionPolicyPreference` と、同じシェルを選んだ場合の `PSModulePath` を保存し、明示した環境設定を優先する。daemon の同名環境変数は継承せず、選択したシェルの既定値または保存した設定を使う。関数、プロファイル、セッション内変数の再現は対象外とする。
+
 ---
 
 # 9. 登録時PATH
@@ -293,9 +297,9 @@ command executable
 
 さらにtarget process自身が別プログラムを起動できるよう、登録時の `PATH` もservice環境として保存する。
 
-その他の環境変数は自動保存しない。
+Windows の `.ps1` では実行環境を再現するため、前節の `PSModulePath` / `PSExecutionPolicyPreference` をシェル用の既定値として保存する。これらより env-file と `--env` の設定を優先する。
 
-API_KEY等を意図せず永続化しないため。
+これら以外の環境変数は自動保存しない。API_KEY等を意図せず永続化しないため。
 
 ---
 

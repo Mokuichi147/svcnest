@@ -41,6 +41,10 @@ pub struct ServiceConfig {
     pub resolved_executable: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_script: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub interpreter_args: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub interpreter_environment: BTreeMap<String, String>,
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
@@ -112,13 +116,22 @@ impl ServiceConfig {
         {
             return fail("INVALID_CONFIG", "Config paths must be absolute");
         }
+        if self.interpreter_args.iter().any(|arg| arg.contains('\0'))
+            || (!self.interpreter_args.is_empty() || !self.interpreter_environment.is_empty())
+                && self.resolved_script.is_none()
+        {
+            return fail(
+                "INVALID_CONFIG",
+                "Interpreter settings require a resolved script; arguments cannot contain NUL",
+            );
+        }
         if self.stop_timeout_ms == 0 || self.stop_timeout_ms > 300_000 {
             return fail(
                 "INVALID_CONFIG",
                 "Stop timeout must be between 1 and 300000 milliseconds",
             );
         }
-        for (key, value) in &self.environment {
+        for (key, value) in self.environment.iter().chain(&self.interpreter_environment) {
             validate_env_key(key)?;
             if value.contains('\0') {
                 return fail("INVALID_ENV", "Environment values cannot contain NUL");
@@ -128,7 +141,7 @@ impl ServiceConfig {
     }
 
     pub fn effective_environment(&self) -> Result<BTreeMap<String, String>> {
-        let mut env = BTreeMap::new();
+        let mut env = self.interpreter_environment.clone();
         if let Some(path) = &self.env_file {
             let iter = dotenvy::from_path_iter(path)
                 .map_err(|_| anyhow::anyhow!("Cannot read env-file {}", path.display()))?;
@@ -150,7 +163,11 @@ impl ServiceConfig {
 
     pub fn redacted(&self) -> Self {
         let mut config = self.clone();
-        for (key, value) in &mut config.environment {
+        for (key, value) in config
+            .environment
+            .iter_mut()
+            .chain(&mut config.interpreter_environment)
+        {
             if !key.eq_ignore_ascii_case("PATH") {
                 *value = "********".to_owned();
             }

@@ -15,6 +15,12 @@ flowchart TD
 
 Windows の npm / npx と Node.js 用 cmd-shim は `resolve::node_shim` が解決します。JavaScript の実体と、隣接または登録時 PATH の Node.js を保存し、Node.js へ script と元 argv の引数を直接渡します。npm の prefix helper がある場合はサービス環境を適用して prefix を検索し、更新された global npm を選びます。対象形式は [npm の npx.cmd](https://github.com/npm/cli/blob/latest/bin/npx.cmd) と [cmd-shim](https://github.com/npm/cmd-shim/blob/main/lib/index.js) に基づきます。
 
+一般の `.bat` / `.cmd` は絶対パスを保存し、Rust 標準ライブラリのバッチ専用引数エスケープで Windows 標準の `cmd.exe` から起動します。`node_shim` は対象外のバッチには `None` を返しますが、認識した Node.js ランチャーの実体を解決できない場合は登録を失敗させます。バッチ内のコードや引数を登録時に実行しません。
+
+Windows の `.ps1` は `resolve::windows_shell` が PowerShell を解決します。明示した `--shell`、登録元の直近のシェルが PowerShell の場合の実体、登録時 PATH の `pwsh.exe` / `powershell.exe`、Windows 標準の PowerShell の順に選びます。親プロセス列は ToolHelp で読み取り、途中で別のシェルを見つけた場合はそれより前の PowerShell を選びません。シェルの絶対パス、`resolved_script`、`interpreter_args` を保存し、foreground と background は同じ起動処理を使います。プロファイルは読み込まず `-File` へ元 argv を渡します。PowerShell 5.1 の実行ポリシー判定のため、スクリプト引数だけは内部形式の `\\?\` パスを通常のドライブ / UNC 表記に戻します。
+
+`interpreter_environment` にセッション限定の `PSExecutionPolicyPreference` と、登録元と同じシェルを選んだ場合の `PSModulePath` を保存します。env-file と `--env` は保存したシェル環境より優先します。起動時は daemon の同名変数を継承せず、保存した設定または選択した PowerShell の既定値を使い、5.1 と 7 のモジュールパスを混在させません。
+
 `resolve::service` がサービス名・cwd・親ディレクトリ・曖昧さ・`--all` の規則を一箇所で実装します。すべての通常 CLI 操作と IPC 操作がこれを使用します。明示した名前は cwd に優先し、複数サービスが見つかった階層からさらに親を探索しません。
 
 設定変更は daemon の mutex で直列化します。実行中の設定の置換と削除にはサービスロックの空きを確認します。設定ファイルは同じディレクトリに一時ファイルを作り、内容を同期した後に atomic rename します。Unix ではディレクトリも同期します。CLI の読み取りは更新前か更新後の完全な設定を取得します。

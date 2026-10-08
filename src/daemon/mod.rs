@@ -314,7 +314,7 @@ impl State {
                 self.runners.remove(&config.name);
                 logging::remove_if_exists(&self.paths.status(&config.name))?;
                 drop(_lock);
-                self.snapshot(&[config])
+                self.snapshot(&[*config])
             }
             Command::Action {
                 action,

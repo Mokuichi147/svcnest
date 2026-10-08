@@ -131,7 +131,7 @@ impl std::fmt::Display for Action {
 pub enum Command {
     Ping,
     Add {
-        config: ServiceConfig,
+        config: Box<ServiceConfig>,
         replace: bool,
     },
     Action {

@@ -1,4 +1,7 @@
-use crate::{error::fail, resolve::executable};
+use crate::{
+    error::{ServiceError, fail},
+    resolve::executable,
+};
 use anyhow::{Context, Result};
 use std::{
     collections::BTreeMap,
@@ -9,22 +12,26 @@ use std::{
     time::Duration,
 };
 
-// npm が生成する Node.js 用 .cmd の実体を解決する。batch 自体は実行しない。
+// npm が生成する Node.js 用 .cmd の実体を解決する。一般の batch は None を返す。
 pub async fn resolve(
     shim: &Path,
     cwd: &Path,
     path: Option<&OsStr>,
     environment: &BTreeMap<String, String>,
-) -> Result<(PathBuf, PathBuf)> {
-    let text = fs::read_to_string(shim).context("Cannot read npm launcher")?;
-    if text.len() > 128 * 1024 {
-        return fail(
-            "SHELL_REQUIRED",
-            "Unsupported batch launcher; register its interpreter explicitly",
-        );
+) -> Result<Option<(PathBuf, PathBuf)>> {
+    let bytes = fs::read(shim).context("Cannot read batch launcher")?;
+    if bytes.len() > 128 * 1024 {
+        return Ok(None);
     }
+    let Ok(text) = std::str::from_utf8(&bytes) else {
+        return Ok(None);
+    };
     let parent = shim.parent().context("Launcher has no parent directory")?;
-    let (mut script, prefix) = parse(&text, parent)?;
+    let (mut script, prefix) = match parse(text, parent) {
+        Ok(parsed) => parsed,
+        Err(error) if ServiceError::code(&error) == "SHELL_REQUIRED" => return Ok(None),
+        Err(error) => return Err(error),
+    };
     let adjacent_node = parent.join("node.exe");
     let node = if executable::is_executable(&adjacent_node) {
         fs::canonicalize(adjacent_node)?
@@ -68,7 +75,7 @@ pub async fn resolve(
     if !script.is_file() {
         return fail("LAUNCHER_RESOLUTION_FAILED", "npm entrypoint is not a file");
     }
-    Ok((node, script))
+    Ok(Some((node, script)))
 }
 
 fn parse(text: &str, parent: &Path) -> Result<(PathBuf, Option<PathBuf>)> {
@@ -166,6 +173,34 @@ fn unsupported<T>() -> Result<T> {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn ordinary_and_non_utf8_batches_fall_back_without_hiding_broken_node_shims() {
+        let temp = tempfile::tempdir().unwrap();
+        let shim = temp.path().join("start.bat");
+        for bytes in [
+            b"@echo off\r\necho hello\r\n".as_slice(),
+            b"rem \x81\x40\r\n",
+        ] {
+            fs::write(&shim, bytes).unwrap();
+            assert!(
+                resolve(&shim, temp.path(), None, &BTreeMap::new())
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        fs::write(
+            &shim,
+            "SET dp0=%~dp0\nSET \"_prog=node\"\n\"%_prog%\" \"%dp0%\\missing.js\" %*\n",
+        )
+        .unwrap();
+        assert!(
+            resolve(&shim, temp.path(), None, &BTreeMap::new())
+                .await
+                .is_err()
+        );
+    }
+
     #[test]
     fn generated_node_launcher_keeps_spaces_and_relative_parent_components() {
         let temp = tempfile::tempdir().unwrap();
@@ -209,6 +244,7 @@ mod tests {
         .unwrap();
         let resolved = resolve(&shim, temp.path(), None, &BTreeMap::new())
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(
             resolved,

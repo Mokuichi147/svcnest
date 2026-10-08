@@ -26,8 +26,25 @@ impl ProcessTree {
     pub fn spawn(config: &ServiceConfig, foreground: bool) -> Result<Self> {
         config.validate()?;
         let mut command = Command::new(&config.resolved_executable);
+        command.args(&config.interpreter_args);
         if let Some(script) = &config.resolved_script {
+            #[cfg(windows)]
+            let script = if config.interpreter_args.is_empty() {
+                script.to_owned()
+            } else {
+                crate::resolve::windows_shell::script_argument(script)
+            };
             command.arg(script);
+        }
+        #[cfg(windows)]
+        if config.resolved_script.is_some()
+            && crate::resolve::windows_shell::is_powershell(&config.resolved_executable)
+        {
+            // 起動済み daemon の別バージョンの PowerShell 環境を混ぜない。
+            // 保存したシェル環境や明示した環境は、続く envs で適用する。
+            command
+                .env_remove("PSModulePath")
+                .env_remove("PSExecutionPolicyPreference");
         }
         command
             .args(&config.command[1..])
@@ -52,18 +69,7 @@ impl ProcessTree {
             use windows_sys::Win32::System::Threading::{
                 CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED,
             };
-            // std::process は .cmd/.bat を暗黙に cmd.exe へ渡すため、明示した shell 以外は拒否する。
-            if config
-                .resolved_executable
-                .extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"))
-            {
-                return fail(
-                    "SHELL_REQUIRED",
-                    "Register cmd.exe or powershell explicitly to run a batch file",
-                );
-            }
+            // .cmd/.bat は std::process がシステムの cmd.exe と専用の引数エスケープで起動する。
             // foreground は端末の Ctrl+C を直接受信できる、既存の console グループを使う。
             command.creation_flags(
                 CREATE_SUSPENDED

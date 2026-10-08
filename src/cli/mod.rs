@@ -77,6 +77,12 @@ pub struct AddArgs {
     pub name: String,
     #[arg(long)]
     pub cwd: Option<PathBuf>,
+    #[arg(
+        long,
+        value_name = "EXECUTABLE",
+        help = "Select the PowerShell executable for a Windows .ps1 script"
+    )]
+    pub shell: Option<String>,
     #[arg(long, value_enum, default_value_t = RestartPolicy::OnFailure)]
     pub restart: RestartPolicy,
     #[arg(long, value_parser = parse_env, value_name = "KEY=VALUE")]
@@ -231,7 +237,7 @@ pub async fn execute(cli: Cli) -> Result<i32> {
             ipc::request(
                 &paths,
                 Command::Add {
-                    config,
+                    config: Box::new(config),
                     replace: args.replace,
                 },
             )
@@ -344,6 +350,8 @@ async fn registration_config(args: &AddArgs) -> Result<ServiceConfig> {
         command: args.command.clone(),
         resolved_executable: executable,
         resolved_script: None,
+        interpreter_args: Vec::new(),
+        interpreter_environment: BTreeMap::new(),
         enabled: args.enable,
         restart: args.restart,
         stop_timeout_ms: args.stop_timeout,
@@ -355,25 +363,54 @@ async fn registration_config(args: &AddArgs) -> Result<ServiceConfig> {
     #[cfg(windows)]
     let config = {
         let mut config = config;
-        if config
+        let extension = config
             .resolved_executable
             .extension()
             .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"))
-        {
-            let (node, script) = resolve::node_shim::resolve(
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if args.shell.is_some() && extension != "ps1" {
+            return fail(
+                "INVALID_SHELL",
+                "--shell is only supported for Windows .ps1 scripts",
+            );
+        }
+        if extension == "ps1" {
+            let shell = resolve::windows_shell::powershell(
+                &config.cwd,
+                path.as_deref(),
+                args.shell.as_deref(),
+            )?;
+            config.interpreter_environment = resolve::windows_shell::environment(&shell);
+            config.resolved_script = Some(config.resolved_executable);
+            config.resolved_executable = shell;
+            config.interpreter_args = ["-NoLogo", "-NoProfile", "-File"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
+        } else if matches!(extension.as_str(), "cmd" | "bat")
+            && let Some((node, script)) = resolve::node_shim::resolve(
                 &config.resolved_executable,
                 &config.cwd,
                 path.as_deref(),
                 &environment,
             )
-            .await?;
+            .await?
+        {
             config.resolved_executable = node;
             config.resolved_script = Some(script);
         }
         config
     };
+    #[cfg(not(windows))]
+    if args.shell.is_some() {
+        return fail(
+            "INVALID_SHELL",
+            "--shell is only supported for Windows .ps1 scripts",
+        );
+    }
     let _ = environment;
+    config.validate()?;
     Ok(config)
 }
 
@@ -488,7 +525,7 @@ fn print_snapshot(snapshot: &Snapshot, json: bool, table: bool) -> Result<()> {
 }
 
 pub fn display_command(command: &[String]) -> String {
-    // これは表示専用。実行には常に保存した argv 配列を直接使用する。
+    // これは表示専用。実行には保存した argv と解決済みの起動方法を使用する。
     command
         .iter()
         .map(|arg| {

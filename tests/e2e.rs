@@ -561,6 +561,230 @@ fn registered_path_drives_the_executable_and_its_children_independently_of_daemo
 
 #[cfg(windows)]
 #[test]
+fn windows_batches_register_directly_and_keep_literal_arguments_in_both_run_modes() {
+    let sandbox = Sandbox::new();
+    let node = svcnest::resolve::executable::resolve(
+        "node",
+        &sandbox.project,
+        std::env::var_os("PATH").as_deref(),
+        None,
+    )
+    .unwrap();
+    fs::copy(node, sandbox.project.join("node.exe")).unwrap();
+    fs::write(
+        sandbox.project.join("argv.js"),
+        "console.log(JSON.stringify({argv: process.argv.slice(2), cwd: process.cwd()}));",
+    )
+    .unwrap();
+    let arguments = [
+        "with spaces",
+        "",
+        "& | < > ^ ! %TOKEN%",
+        "\"quoted\"",
+        "日本語",
+        "trailing\\",
+        "\" & echo injected > injected.txt & rem \"",
+    ];
+    let other = sandbox.temp.path().join("another directory");
+    fs::create_dir(&other).unwrap();
+    for extension in ["bat", "CMD"] {
+        let input = format!(".\\start script.{extension}");
+        let name = extension.to_ascii_lowercase();
+        fs::write(
+            sandbox.project.join(format!("start script.{extension}")),
+            "@echo off\r\n\"%~dp0node.exe\" \"%~dp0argv.js\" %*\r\n",
+        )
+        .unwrap();
+        let mut registration = vec!["add", &name, "--restart", "never", "--", &input];
+        registration.extend(arguments);
+        sandbox.ok(&registration);
+        let config = config::load_named(&sandbox.paths, &name).unwrap();
+        assert_eq!(config.command[0], input);
+        assert_eq!(
+            config.resolved_executable,
+            fs::canonicalize(sandbox.project.join(format!("start script.{extension}"))).unwrap()
+        );
+        assert!(config.resolved_script.is_none());
+        let output = sandbox.ok_at(&other, &["run", &name]);
+        let result: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        assert_eq!(result["argv"], serde_json::json!(arguments));
+        assert_eq!(
+            fs::canonicalize(result["cwd"].as_str().unwrap()).unwrap(),
+            fs::canonicalize(&sandbox.project).unwrap()
+        );
+        sandbox.ok_at(&other, &["start", &name]);
+        wait_for(|| (sandbox.state(&name) == ServiceState::Stopped).then_some(()));
+        let logs = sandbox.ok(&["logs", &name]);
+        assert!(logs.contains(&serde_json::to_string(&arguments).unwrap()));
+        assert!(!sandbox.project.join("injected.txt").exists());
+    }
+    sandbox.error(
+        &[
+            "add",
+            "invalid",
+            "--shell",
+            "pwsh",
+            "--",
+            ".\\start script.bat",
+        ],
+        "INVALID_SHELL",
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_ps1_uses_the_registering_powershell_and_pins_its_environment() {
+    let sandbox = Sandbox::new();
+    // 登録元とは異なる環境の daemon が既に動いていても、登録時のシェルを選ぶ。
+    sandbox.ok(&["daemon", "start"]);
+    let input = ".\\start script.PS1";
+    fs::write(sandbox.project.join("start script.PS1"), "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)\n@{ argv = @($args); cwd = (Get-Location).Path; shell = (Get-Process -Id $PID).Path; policy = (Get-ExecutionPolicy -Scope Process).ToString() } | ConvertTo-Json -Compress\n").unwrap();
+    let arguments = [
+        "with spaces",
+        "$HOME; $(Set-Content injected.txt bad) | &",
+        "%TOKEN%",
+        "日本語",
+    ];
+    let other = sandbox.temp.path().join("another directory");
+    fs::create_dir(&other).unwrap();
+    let mut tested = 0;
+    for command in ["powershell.exe", "pwsh.exe"] {
+        let Ok(shell) = svcnest::resolve::executable::resolve(
+            command,
+            &sandbox.project,
+            std::env::var_os("PATH").as_deref(),
+            None,
+        ) else {
+            continue;
+        };
+        tested += 1;
+        let name = if command == "pwsh.exe" {
+            "pwsh"
+        } else {
+            "powershell"
+        };
+        // CLI を実際の PowerShell から呼び、PATH にシェルがなくても同じ実体を保存する。
+        let mut argv = vec![
+            CLI,
+            "--home",
+            sandbox.home.to_str().unwrap(),
+            "add",
+            name,
+            "--restart",
+            "never",
+            "--",
+            input,
+        ];
+        argv.extend(arguments);
+        let invocation = format!(
+            "& {}; exit $LASTEXITCODE",
+            argv.iter()
+                .map(|arg| format!("'{}'", arg.replace('\'', "''")))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        let mut parent = Command::new(&shell);
+        parent
+            .current_dir(&sandbox.project)
+            .env_remove("PSModulePath")
+            .env("PATH", &sandbox.project)
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "RemoteSigned",
+                "-Command",
+                &invocation,
+            ]);
+        let output = output_with_timeout(&mut parent, Duration::from_secs(30));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let config = config::load_named(&sandbox.paths, name).unwrap();
+        assert_eq!(config.resolved_executable, shell);
+        assert_eq!(config.command[0], input);
+        assert_eq!(
+            config.resolved_script.as_ref().unwrap(),
+            &fs::canonicalize(sandbox.project.join("start script.PS1")).unwrap()
+        );
+        assert_eq!(
+            config.interpreter_environment["PSExecutionPolicyPreference"],
+            "RemoteSigned"
+        );
+        assert!(config.interpreter_environment.contains_key("PSModulePath"));
+        let execution = sandbox.output_at(&other, &["run", name]);
+        assert!(
+            execution.status.success() && !execution.stdout.is_empty(),
+            "{name}: stdout={} stderr={}",
+            String::from_utf8_lossy(&execution.stdout),
+            String::from_utf8_lossy(&execution.stderr)
+        );
+        let result: serde_json::Value = serde_json::from_slice(&execution.stdout).unwrap();
+        assert_eq!(result["argv"], serde_json::json!(arguments));
+        assert_eq!(result["policy"], "RemoteSigned");
+        assert_eq!(
+            fs::canonicalize(result["shell"].as_str().unwrap()).unwrap(),
+            shell
+        );
+        assert_eq!(
+            fs::canonicalize(result["cwd"].as_str().unwrap()).unwrap(),
+            fs::canonicalize(&sandbox.project).unwrap()
+        );
+        sandbox.ok(&["start", name]);
+        wait_for(|| (sandbox.state(name) == ServiceState::Stopped).then_some(()));
+        let logs = sandbox.ok(&["logs", name]);
+        let result: serde_json::Value = logs
+            .lines()
+            .find_map(|line| {
+                let start = line.find('{')?;
+                serde_json::from_str(&line[start..]).ok()
+            })
+            .unwrap_or_else(|| panic!("Missing script output: {logs}"));
+        assert_eq!(result["argv"], serde_json::json!(arguments));
+        assert_eq!(result["policy"], "RemoteSigned");
+        assert!(!sandbox.project.join("injected.txt").exists());
+    }
+    assert!(tested > 0, "Windows PowerShell is required for this test");
+    let shell = svcnest::resolve::executable::resolve(
+        "powershell.exe",
+        &sandbox.project,
+        std::env::var_os("PATH").as_deref(),
+        None,
+    )
+    .unwrap();
+    let literal_arguments = ["", "\"quoted\"", "trailing\\", "-flag", "first\r\nsecond"];
+    let mut registration = vec![
+        "add",
+        "explicit",
+        "--shell",
+        shell.to_str().unwrap(),
+        "--env",
+        "PSExecutionPolicyPreference=RemoteSigned",
+        "--",
+        input,
+    ];
+    registration.extend(literal_arguments);
+    sandbox.ok(&registration);
+    assert_eq!(
+        config::load_named(&sandbox.paths, "explicit")
+            .unwrap()
+            .resolved_executable,
+        shell
+    );
+    let result: serde_json::Value =
+        serde_json::from_str(sandbox.ok(&["run", "explicit"]).trim()).unwrap();
+    assert_eq!(result["policy"], "RemoteSigned");
+    assert_eq!(result["argv"], serde_json::json!(literal_arguments));
+    sandbox.error(
+        &["add", "invalid", "--shell", "cmd.exe", "--", input],
+        "INVALID_SHELL",
+    );
+}
+
+#[cfg(windows)]
+#[test]
 fn windows_npx_uses_node_directly_and_preserves_literal_arguments() {
     let sandbox = Sandbox::new();
     let node = svcnest::resolve::executable::resolve(

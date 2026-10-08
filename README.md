@@ -25,7 +25,23 @@ svcnest run
 
 登録時にカレントディレクトリを正規化し、実行ファイルを PATH から絶対パスへ解決します。`./target/release/myproject` のような入力はサービスの working directory を基準に解決します。表示用の元のコマンドと、実行用の絶対パスを分けて保存します。
 
-引数は argv 配列として実行します。パイプやリダイレクトが必要な場合は、`sh -lc '...'`、`powershell -Command '...'` などを明示的に登録してください。Windows の標準 npm / npx / Node.js 用ランチャーは、参照先の Node.js と JavaScript を絶対パスへ解決するため、`svcnest add mcp -- npx some-mcp-server` と登録できます。実行時に batch や shell へ引数を渡しません。それ以外の `.cmd` / `.bat` は、`cmd.exe` などの明示登録が必要です。
+引数は argv 配列として実行します。パイプやリダイレクトが必要な場合は、`sh -lc '...'`、`powershell -Command '...'` などを明示的に登録してください。Windows の標準 npm / npx / Node.js 用ランチャーは、参照先の Node.js と JavaScript を絶対パスへ解決するため、`svcnest add mcp -- npx some-mcp-server` と登録できます。これらのランチャーは Node.js を直接起動します。
+
+Windows の `.bat` / `.cmd` / `.ps1` は、普段実行するスクリプトをそのまま登録できます。
+
+```powershell
+svcnest add app -- .\start.bat
+svcnest add worker -- .\start.ps1 -Port 8000
+svcnest start app
+svcnest start worker
+
+# PowerShell を明示指定する場合
+svcnest add worker7 --shell pwsh -- .\start.ps1
+```
+
+一般のバッチは Windows 標準の `cmd.exe` で起動し、引数のエスケープは Rust 標準ライブラリへ委ねます。`.ps1` は登録元の直近のシェルが PowerShell ならその実行ファイルを選び、それ以外は登録時の PATH の `pwsh.exe`、`powershell.exe`、Windows 標準の PowerShell の順に探します。`--shell` は `.ps1` 用で、`pwsh` / `powershell` またはその実行ファイルのパスを指定できます。拡張子は大文字・小文字を区別しません。
+
+スクリプトの絶対パスと、PowerShell の実行ファイル・起動オプションを保存するため、起動時のカレントディレクトリや daemon の PATH には依存しません。PowerShell は [`-NoLogo -NoProfile -File`](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_powershell_exe?view=powershell-5.1) で起動します。登録元と同じ PowerShell を使う場合は `PSModulePath` を保存し、セッション限定の `PSExecutionPolicyPreference` も保存します。`--env` / env-file の同名設定が優先します。別バージョンのシェルを選ぶ場合は、そのシェルの既定モジュールパスを使います。daemon のモジュールパスやセッション限定ポリシーは引き継ぎません。プロファイル、関数、セッション内の変数は再現しません。登録時はスクリプトを実行せず、起動時に指定された引数を渡します。
 
 ## サービスの選択
 
@@ -81,9 +97,9 @@ svcnest add api \
 
 `--enable` で将来の daemon 起動時の自動起動を有効にして登録できます。`--replace` は停止済みの同名サービスを上書きします。名前は `[a-z0-9][a-z0-9._-]{0,63}` です。`--stop-timeout` は `1ms` から `300s`、単位なしの場合は秒として解釈します。
 
-登録時に自動保存する環境変数は PATH だけです。それ以外は明示した `--env` の値と env-file のパスを保存します。env-file の値は起動のたびに読み込み、設定ファイルへコピーしません。優先順位は `--env`、env-file、親プロセスの環境の順で、登録した PATH は env-file より優先します。
+登録時に自動保存する環境変数は PATH と、`.ps1` の場合のシェル用 `PSModulePath` / `PSExecutionPolicyPreference` です。それ以外は明示した `--env` の値と env-file のパスを保存します。env-file の値は起動のたびに読み込み、設定ファイルへコピーしません。優先順位は `--env`、env-file、保存したシェル環境、親プロセスの環境の順で、登録した PATH は env-file より優先します。
 
-設定はサービスごとに TOML として保存し、一時ファイルの同期と atomic rename で更新します。Windows の予約ファイル名にも対応するため、ファイル名には `svc-` 接頭辞を付けます。Node.js ランチャーでは `resolved_executable` に Node.js、`resolved_script` に JavaScript の絶対パスを保存し、表示用 `command` は元の入力を保ちます。
+設定はサービスごとに TOML として保存し、一時ファイルの同期と atomic rename で更新します。Windows の予約ファイル名にも対応するため、ファイル名には `svc-` 接頭辞を付けます。Node.js ランチャーでは `resolved_executable` に Node.js、`resolved_script` に JavaScript の絶対パスを保存し、表示用 `command` は元の入力を保ちます。PowerShell スクリプトでは同じフィールドにシェルと `.ps1` の絶対パスを保存し、`interpreter_args` に起動オプション、`interpreter_environment` にシェル用の環境変数を保存します。これらのフィールドがない従来の設定も読み込めます。
 
 ## 再起動とログ
 

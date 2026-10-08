@@ -13,8 +13,8 @@
 | 5 | `resolve::executable::working_directory` と正規化テスト、削除済み cwd から明示 `--cwd` を指定するテストで確認。 |
 | 6 | executable resolution の PATH・相対・絶対・存在しないファイルのテストで確認。Windows PATHEXT は実装と型チェックがあり、Windows 実行は未検証。 |
 | 7 | TOML roundtrip と native smoke が元 argv / resolved executable を別々に保存することを確認。 |
-| 8 | `ProcessTree::spawn` は保存した argv を `Command::args` へ直接渡す。literal shell 記号を含む引数を実行テストで確認。標準 npm / npx / Node 用 shim を直接実行へ解決し、batch と shell の暗黙実行を回避。共通 parser テストは成功、Windows 実行は未検証。 |
-| 9 | PATH だけの自動保存と API_KEY の非保存を実行テストで確認。既存 daemon の PATH に存在しない親と子 executable を登録専用 PATH で起動する実行テストが成功。 |
+| 8 | `ProcessTree::spawn` は保存した argv を `Command::args` へ渡す。一般の Windows batch は標準ライブラリの専用エスケープを使用し、標準 npm / npx / Node 用 shim は Node.js を直接起動する。`.ps1` は登録元のシェルと起動方法を保存する。Windows の batch / PowerShell / npx の実行テストで foreground・background・literal 引数・空白を含むパスを確認。 |
+| 9 | PATH の自動保存と API_KEY の非保存を実行テストで確認。`.ps1` はシェル用のモジュールパスと実行ポリシーも保存し、env-file / 明示環境を優先する。既存 daemon の環境と異なる executable / 子 executable / PowerShell を登録時の環境で起動する実行テストが成功。 |
 | 10 | 名前省略の start / status / logs / stop を project workflow と native smoke で確認。 |
 | 11 | 子ディレクトリからの status / config / start / logs / stop を実行テストで確認。 |
 | 12 | 唯一の resolver に明示名優先・完全一致・親探索を実装。名前指定の全主要操作は cwd が削除された状態でも成功。 |

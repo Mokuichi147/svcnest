@@ -6,7 +6,7 @@
 |---|---|
 | macOS arm64 / Rust 1.98 stable | 全 42 テスト成功、fmt / Clippy 成功、release ビルド成功 |
 | macOS x86_64 | 全ターゲットの Clippy / 型チェック成功。実行は未検証 |
-| Windows x64 / Rust 1.98 stable | 全 39 テスト成功、fmt / Clippy 成功、release ビルド成功。Task Scheduler の実動作と foreground Ctrl+C も成功 |
+| Windows x64 / Rust 1.98 stable | スクリプト直接登録の追加後、全 44 テスト成功、fmt / Clippy 成功、release ビルド成功。Task Scheduler と foreground Ctrl+C は既存の実機検証も成功 |
 | Linux x86_64 | 全ターゲットの Clippy / 型チェック成功。実行は未検証 |
 | Linux arm64 | CI マトリクスに追加。ローカル実行は未検証 |
 
@@ -30,6 +30,8 @@ macOS では実際の LaunchAgent を使う `scripts/native-macos-smoke.py` も�
 登録専用 PATH からの親 executable の解決と、既存 daemon の PATH に存在しない子 executable の起動が成功しました。実サービスで 26 MiB 超の出力を発生させ、標準 10 MiB で二回以上ローテーションし、元の PID が継続すること、follow の全 800 レコードに欠落と重複がないことを確認しています。
 
 `scripts/check-json-schema.py` は Draft 2020-12 validator で実際の status / list の出力 16 件を検証し、stopped / running / foreground / failed / backoff を確認しました。Windows でも Python 3.12 と release バイナリで成功しました。Windows の npm / npx shim は Node.js / JavaScript の直接起動へ解決する実装と共通 parser テスト、Windows 専用の実 npx と literal argv の E2E テストがあり、Windows での実行も成功しています。
+
+Windows の `.bat` / `.cmd` / `.ps1` の直接登録もローカルで検証しました。バッチは空白を含むパス、空文字、引用符、末尾のバックスラッシュ、日本語、環境変数展開や追加コマンドに見える引数を foreground / background で保持します。Windows PowerShell 5.1 と PowerShell 7 のそれぞれから、PATH にシェルがない状態で登録し、選んだ実行ファイルとスクリプト、作業ディレクトリ、モジュールパス、実行ポリシーを再利用できることを確認しました。`--shell` の明示指定、env-file の更新が保存した既定環境より優先すること、従来設定の読み込みも成功しています。この変更後の他 OS の実行と GitHub Actions は未確認です。
 
 `scripts/terminal-background-smoke.py` では実際の擬似端末から add / start を実行し、その端末セッションを切断した後も background サービスが同じ PID で稼働することを確認しました。
 

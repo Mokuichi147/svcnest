@@ -47,6 +47,8 @@ fn config_at(name: &str, cwd: &Path) -> ServiceConfig {
         command: vec!["program".into(), "argument with spaces".into()],
         resolved_executable: std::env::current_exe().unwrap(),
         resolved_script: None,
+        interpreter_args: Vec::new(),
+        interpreter_environment: BTreeMap::new(),
         enabled: false,
         restart: RestartPolicy::OnFailure,
         stop_timeout_ms: 10_000,
@@ -95,6 +97,15 @@ fn invalid_configs_are_rejected() {
         |c| c.cwd = "relative".into(),
         |c| c.resolved_executable = "relative".into(),
         |c| c.resolved_script = Some("relative.js".into()),
+        |c| c.interpreter_args = vec!["-File".into()],
+        |c| {
+            c.interpreter_environment
+                .insert("KEY".into(), "value".into());
+        },
+        |c| {
+            c.resolved_script = Some(c.resolved_executable.clone());
+            c.interpreter_args = vec!["bad\0arg".into()];
+        },
         |c| c.env_file = Some(".env".into()),
         |c| c.command.clear(),
         |c| c.command.push("bad\0arg".into()),
@@ -112,6 +123,54 @@ fn invalid_configs_are_rejected() {
         mutate(&mut config);
         assert!(config.validate().is_err());
     }
+}
+
+#[test]
+fn interpreter_settings_roundtrip_and_explicit_environment_overrides_saved_defaults() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = TestPaths::discover(Some(temp.path().join("home"))).unwrap();
+    let mut config = config_at("script", temp.path());
+    let legacy = toml::to_string(&config).unwrap();
+    assert!(!legacy.contains("interpreter_args"));
+    assert!(!legacy.contains("interpreter_environment"));
+    let legacy: ServiceConfig = toml::from_str(&legacy).unwrap();
+    assert!(legacy.interpreter_args.is_empty());
+    assert!(legacy.interpreter_environment.is_empty());
+
+    config.resolved_script = Some(config.resolved_executable.clone());
+    config.interpreter_args = vec!["-NoProfile".into(), "-File".into()];
+    config
+        .interpreter_environment
+        .insert("PSExecutionPolicyPreference".into(), "RemoteSigned".into());
+    let env_file = temp.path().join("script.env");
+    fs::write(&env_file, "PSExecutionPolicyPreference=AllSigned\n").unwrap();
+    config.env_file = Some(fs::canonicalize(&env_file).unwrap());
+    config::save(&paths, &config).unwrap();
+    let mut loaded = config::load_named(&paths, "script").unwrap();
+    assert_eq!(loaded.interpreter_args, config.interpreter_args);
+    assert_eq!(
+        loaded.effective_environment().unwrap()["PSExecutionPolicyPreference"],
+        "AllSigned"
+    );
+    fs::write(&env_file, "PSExecutionPolicyPreference=Restricted\n").unwrap();
+    assert_eq!(
+        loaded.effective_environment().unwrap()["PSExecutionPolicyPreference"],
+        "Restricted"
+    );
+    config::insert_env(
+        &mut loaded.environment,
+        "PSExecutionPolicyPreference".into(),
+        "RemoteSigned".into(),
+    );
+    assert_eq!(
+        loaded.effective_environment().unwrap()["PSExecutionPolicyPreference"],
+        "RemoteSigned"
+    );
+    assert!(
+        !toml::to_string(&loaded.redacted())
+            .unwrap()
+            .contains("RemoteSigned")
+    );
 }
 
 #[test]
