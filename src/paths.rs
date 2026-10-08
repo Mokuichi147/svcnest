@@ -169,6 +169,8 @@ pub fn private_dir(path: &Path) -> Result<()> {
 
 pub struct Lock {
     _file: File,
+    #[cfg(windows)]
+    _mutex: windows_sys::Win32::Foundation::HANDLE,
 }
 
 impl Lock {
@@ -182,9 +184,70 @@ impl Lock {
         }
         let file = options.open(path)?;
         match file.try_lock() {
-            Ok(()) => Ok(Some(Self { _file: file })),
-            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
-            Err(std::fs::TryLockError::Error(error)) => Err(error.into()),
+            Ok(()) => (),
+            Err(std::fs::TryLockError::WouldBlock) => return Ok(None),
+            Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+        };
+        #[cfg(windows)]
+        {
+            let mutex = named_mutex(path)?;
+            match mutex {
+                Some(mutex) => Ok(Some(Self {
+                    _file: file,
+                    _mutex: mutex,
+                })),
+                None => Ok(None),
+            }
+        }
+        #[cfg(not(windows))]
+        Ok(Some(Self { _file: file }))
+    }
+}
+
+#[cfg(windows)]
+fn named_mutex(path: &Path) -> Result<Option<windows_sys::Win32::Foundation::HANDLE>> {
+    use std::{os::windows::ffi::OsStrExt, ptr::null_mut};
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT},
+        System::Threading::{CreateMutexW, WaitForSingleObject},
+    };
+
+    // Global 名前空間を使い、同じユーザーの別セッションからも同じ singleton
+    // パスに対する二重起動を防ぐ。
+    let name = format!(
+        r"Global\svcnest-lock-{}-{:016x}",
+        crate::platform::windows::user_sid()?,
+        path_hash(path)
+    );
+    let wide = std::ffi::OsStr::new(&name)
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let mutex = unsafe { CreateMutexW(null_mut(), 0, wide.as_ptr()) };
+    if mutex.is_null() {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let result = unsafe { WaitForSingleObject(mutex, 0) };
+    match result {
+        WAIT_OBJECT_0 | WAIT_ABANDONED => Ok(Some(mutex)),
+        WAIT_TIMEOUT => {
+            unsafe { CloseHandle(mutex) };
+            Ok(None)
+        }
+        _ => {
+            unsafe { CloseHandle(mutex) };
+            Err(std::io::Error::last_os_error().into())
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Lock {
+    fn drop(&mut self) {
+        use windows_sys::Win32::{Foundation::CloseHandle, System::Threading::ReleaseMutex};
+        unsafe {
+            ReleaseMutex(self._mutex);
+            CloseHandle(self._mutex);
         }
     }
 }
