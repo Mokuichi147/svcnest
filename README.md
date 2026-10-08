@@ -120,6 +120,8 @@ cargo build --locked --release
 
 実際の OS 連携は `python scripts/native-os-smoke.py` で検証できます。`uv` と、macOS の GUI ログイン、Linux の systemd user セッション、または Windows のログイン済みユーザー環境が必要です。専用の自動起動を一時登録し、登録の修復、自動起動、daemon のクラッシュ回復、重複防止、foreground の Ctrl+C を確認して、終了時に登録と一時ファイルを削除します。CI の Linux ではテスト基盤として user manager を先に開始します。svcnest 自体の操作は一般ユーザーで実行します。確認済みの範囲は [docs/validation.md](docs/validation.md) に記載しています。
 
+Windows のクラッシュ検証では、旧プロセスの回収を確認してから Task Scheduler で daemon を再起動し、enabled サービスが復旧することを確認します。Task Scheduler の [RestartOnFailure](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tsch/2ff4aa5a-7bc4-449f-bbb1-27475645867f) は起動失敗の再試行を設定するもので、実行中の daemon の強制終了からの自動再起動は保証しません。
+
 公開 JSON Schema の検証は `scripts/requirements-test.txt` の依存関係を入れた専用 Python 環境で `python scripts/check-json-schema.py --binary target/release/svcnest` を実行します。実際の stopped / running / foreground / failed / backoff の status と list 出力を検証し、テスト用 daemon を終了します。CI でも同じ検証を実行します。
 
 `python scripts/restart-policy-smoke.py --binary target/release/svcnest` は実時間の待機間隔、60 秒の安定稼働でのリセット、10 回制限を約 3 分で確認します。Unix の端末切断は `python scripts/terminal-background-smoke.py --binary target/release/svcnest` で確認できます。Windows では `--binary target/release/svcnest.exe` を指定します。各検証は独立した一時保存先を使い、テスト用 daemon を終了します。daemon がユーザー単位で一つのため、既存の daemon を停止した状態で、一つずつ実行してください。

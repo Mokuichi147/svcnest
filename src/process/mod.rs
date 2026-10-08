@@ -166,30 +166,65 @@ pub fn prepare_supervisor() -> Result<()> {
 pub fn interrupt() -> impl std::future::Future<Output = ()> {
     // Future を poll する前に登録し、process spawn 中の割り込みも保持する。
     #[cfg(unix)]
-    let channels = {
+    {
         use tokio::signal::unix::{SignalKind, signal};
-        (
+        let channels = (
             signal(SignalKind::interrupt()),
             signal(SignalKind::terminate()),
-        )
-    };
+        );
+        async move {
+            match channels {
+                (Ok(mut interrupt), Ok(mut terminate)) => {
+                    tokio::select! { _ = interrupt.recv() => (), _ = terminate.recv() => () }
+                }
+                (Ok(mut interrupt), Err(_)) => {
+                    interrupt.recv().await;
+                }
+                (Err(_), Ok(mut terminate)) => {
+                    terminate.recv().await;
+                }
+                (Err(_), Err(_)) => std::future::pending::<()>().await,
+            }
+        }
+    }
     #[cfg(windows)]
-    let channels = (
-        tokio::signal::windows::ctrl_c(),
-        tokio::signal::windows::ctrl_break(),
-    );
-    async move {
-        match channels {
-            (Ok(mut interrupt), Ok(mut terminate)) => {
-                tokio::select! { _ = interrupt.recv() => (), _ = terminate.recv() => () }
-            }
-            (Ok(mut interrupt), Err(_)) => {
-                interrupt.recv().await;
-            }
-            (Err(_), Ok(mut terminate)) => {
-                terminate.recv().await;
-            }
-            (Err(_), Err(_)) => std::future::pending::<()>().await,
+    {
+        WindowsInterrupt {
+            ctrl_c: tokio::signal::windows::ctrl_c().ok(),
+            ctrl_break: tokio::signal::windows::ctrl_break().ok(),
+        }
+    }
+}
+
+#[cfg(windows)]
+struct WindowsInterrupt {
+    ctrl_c: Option<tokio::signal::windows::CtrlC>,
+    ctrl_break: Option<tokio::signal::windows::CtrlBreak>,
+}
+
+#[cfg(windows)]
+impl std::future::Future for WindowsInterrupt {
+    type Output = ();
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<()> {
+        // 最初の通知後も受信側を保持し、停止中の追加 Ctrl+C / Ctrl+Break が
+        // Windows の既定ハンドラーで supervisor を強制終了しないようにする。
+        let signals = self.get_mut();
+        if signals
+            .ctrl_c
+            .as_mut()
+            .is_some_and(|signal| signal.poll_recv(cx).is_ready())
+            || signals
+                .ctrl_break
+                .as_mut()
+                .is_some_and(|signal| signal.poll_recv(cx).is_ready())
+        {
+            std::task::Poll::Ready(())
+        } else {
+            std::task::Poll::Pending
         }
     }
 }

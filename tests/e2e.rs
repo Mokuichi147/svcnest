@@ -181,7 +181,11 @@ fn output_with_timeout(command: &mut Command, timeout: Duration) -> Output {
     });
     let deadline = Instant::now() + timeout;
     loop {
-        if let Some(status) = child.try_wait().unwrap() {
+        let status = child.try_wait().unwrap();
+        if let Some(status) = status
+            && stdout_reader.is_finished()
+            && stderr_reader.is_finished()
+        {
             return Output {
                 status,
                 stdout: stdout_reader.join().unwrap(),
@@ -191,9 +195,12 @@ fn output_with_timeout(command: &mut Command, timeout: Duration) -> Output {
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            let _ = stdout_reader.join();
-            let _ = stderr_reader.join();
-            panic!("Timed out waiting for e2e command: {description}");
+            // 子孫がパイプを保持していても、読み取りスレッドの join で待ち続けない。
+            panic!(
+                "Timed out waiting for e2e command or output: {description}; status: {status:?}; stdout finished: {}; stderr finished: {}",
+                stdout_reader.is_finished(),
+                stderr_reader.is_finished(),
+            );
         }
         thread::sleep(Duration::from_millis(25));
     }
@@ -726,6 +733,25 @@ fn concurrent_starts_and_daemons_cannot_duplicate_a_service() {
     thread::sleep(Duration::from_millis(1200));
     assert_eq!(sandbox.state("api"), ServiceState::Stopped);
     assert_eq!(sandbox.pids("api").len(), 1);
+}
+
+#[test]
+fn daemon_start_closes_cli_output_while_daemon_is_running() {
+    let sandbox = Sandbox::new();
+    let mut command = sandbox.command(&sandbox.project);
+    command.args(["daemon", "start"]);
+    let output = output_with_timeout(&mut command, Duration::from_secs(5));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Daemon is running"));
+    let pid = fs::read_to_string(sandbox.paths.runtime.join("daemon.pid"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(is_alive(pid));
 }
 
 #[test]

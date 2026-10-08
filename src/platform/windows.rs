@@ -2,7 +2,7 @@ use crate::{
     paths::Paths,
     platform::{checked_command, label, xml_escape},
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::{
     ffi::c_void,
     fs::File,
@@ -31,6 +31,27 @@ use windows_sys::Win32::{
 
 pub fn user_sid() -> Result<String> {
     sid_of_process(unsafe { GetCurrentProcess() })
+}
+
+pub fn prevent_stdio_inheritance() -> Result<()> {
+    use windows_sys::Win32::{
+        Foundation::{HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation},
+        System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE},
+    };
+
+    // 元の標準ハンドルが daemon や対象プロセスに残ると、CLI 終了後も
+    // 呼び出し元のパイプが EOF にならない。明示した stdio は Command が複製する。
+    for id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        let handle = unsafe { GetStdHandle(id) };
+        if !handle.is_null()
+            && handle != INVALID_HANDLE_VALUE
+            && unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } == 0
+        {
+            return Err(std::io::Error::last_os_error())
+                .context("Cannot prevent standard handle inheritance");
+        }
+    }
+    Ok(())
 }
 
 pub fn user_runtime_directory() -> Result<std::path::PathBuf> {
@@ -272,6 +293,16 @@ pub fn render(paths: &Paths, executable: &Path) -> Result<String> {
         xml_escape(&args),
         xml_escape(&paths.home.to_string_lossy())
     ))
+}
+
+pub(crate) fn registration_bytes(definition: &str) -> Vec<u8> {
+    // schtasks /XML に渡すファイルは、宣言と一致する BOM 付き UTF-16LE にする。
+    // dry-run の標準出力は UTF-8 のまま、登録ファイルだけを変換する。
+    let definition = definition.replacen("encoding=\"UTF-8\"", "encoding=\"UTF-16\"", 1);
+    [0xff, 0xfe]
+        .into_iter()
+        .chain(definition.encode_utf16().flat_map(u16::to_le_bytes))
+        .collect()
 }
 
 pub async fn install(paths: &Paths, path: &Path) -> Result<()> {

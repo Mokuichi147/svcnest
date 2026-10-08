@@ -94,10 +94,12 @@ pub async fn install(paths: &Paths) -> Result<()> {
         Err(error) => return Err(error.into()),
     };
     fs::create_dir_all(path.parent().context("Registration file has no parent")?)?;
-    atomic_write(
-        &path,
-        render(paths, &fs::canonicalize(std::env::current_exe()?)?)?.as_bytes(),
-    )?;
+    let definition = render(paths, &fs::canonicalize(std::env::current_exe()?)?)?;
+    #[cfg(windows)]
+    let bytes = windows::registration_bytes(&definition);
+    #[cfg(not(windows))]
+    let bytes = definition.into_bytes();
+    atomic_write(&path, &bytes)?;
     let result = {
         #[cfg(target_os = "macos")]
         {

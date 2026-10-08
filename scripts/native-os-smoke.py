@@ -41,7 +41,7 @@ while True:
 def execute(*args, check=True):
     result = subprocess.run(args, capture_output=True, text=True, timeout=45)
     if check and result.returncode:
-        raise RuntimeError(f"{args}: {result.stdout} {result.stderr}")
+        raise RuntimeError(f"{args}: exit={result.returncode}; {result.stdout} {result.stderr}")
     return result
 
 
@@ -147,7 +147,11 @@ kernel = ctypes.WinDLL('kernel32', use_last_error=True)
 kernel.FreeConsole()
 if not kernel.AttachConsole(int(sys.argv[1])):
     raise ctypes.WinError(ctypes.get_last_error())
-kernel.SetConsoleCtrlHandler(None, True)
+handler_type = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_uint)
+handler = handler_type(lambda event: True)
+kernel.SetConsoleCtrlHandler.argtypes = [handler_type, ctypes.c_int]
+if not kernel.SetConsoleCtrlHandler(handler, True):
+    raise ctypes.WinError(ctypes.get_last_error())
 if not kernel.GenerateConsoleCtrlEvent(0, 0):
     raise ctypes.WinError(ctypes.get_last_error())
 time.sleep(0.25)
@@ -174,7 +178,7 @@ def main():
         (project / "main.py").write_text(PROGRAM)
 
         def cli(*args, cwd=project, check=True):
-            result = subprocess.run([str(binary), "--home", str(home), *args], cwd=cwd, capture_output=True, text=True, timeout=45)
+            result = subprocess.run([str(binary), "--home", str(home), *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8", timeout=45)
             if check and result.returncode:
                 raise RuntimeError(f"{args}: {result.stderr}")
             return result
@@ -216,9 +220,14 @@ def main():
             managed_daemon = int((integration.runtime / "daemon.pid").read_text())
             integration.assert_managed(managed_daemon)
             integration.crash(managed_daemon)
-            # Windows の Task Scheduler は最短 1 分の再起動間隔を持つ。
-            recovery_timeout = 120 if sys.platform == "win32" else 30
-            recovered = wait_for(lambda: (value := running()) and value["pid"] != managed["pid"] and value, timeout=recovery_timeout)
+            if sys.platform == "win32":
+                # RestartOnFailure はタスクの起動失敗を再試行する設定であり、
+                # 実行中の daemon 強制終了からの自動再起動は保証されない。
+                # https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tsch/2ff4aa5a-7bc4-449f-bbb1-27475645867f
+                # 旧ツリーの回収後に OS から再起動し、enabled service の復旧を検証する。
+                wait_for(lambda: status()["state"] in ("stopped", "failed"))
+                integration.start()
+            recovered = wait_for(lambda: (value := running()) and value["pid"] != managed["pid"] and value)
             observed_ready = wait_for(lambda: (count := ready_count()) > observed_ready and count)
             new_daemon = int((integration.runtime / "daemon.pid").read_text())
             assert new_daemon != managed_daemon
@@ -233,9 +242,11 @@ def main():
             foreground = subprocess.Popen([str(binary), "--home", str(home), "run"], cwd=project, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags)
             wait_for(lambda: status()["state"] == "foreground")
             interrupt_foreground(foreground)
-            assert foreground.wait(timeout=10) == 130
+            foreground_code = foreground.wait(timeout=10)
+            assert foreground_code == 130, f"Unexpected foreground exit code: {foreground_code}"
             cli("remove", "--stop", "--purge")
-            print(json.dumps({"success": True, "platform": sys.platform, "checks": ["uv registration", "child directory resolution", "enable --now", "stale OS registration repair", "native autostart", "native daemon crash recovery", "restart", "foreground Ctrl+C"]}, ensure_ascii=False))
+            recovery_check = "native daemon restart after crash" if sys.platform == "win32" else "native daemon crash recovery"
+            print(json.dumps({"success": True, "platform": sys.platform, "checks": ["uv registration", "child directory resolution", "enable --now", "stale OS registration repair", "native autostart", recovery_check, "restart", "foreground Ctrl+C"]}, ensure_ascii=False))
         finally:
             if foreground is not None and foreground.poll() is None:
                 interrupt_foreground(foreground)
