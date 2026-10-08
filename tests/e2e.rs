@@ -738,12 +738,12 @@ fn a_user_cannot_start_another_daemon_by_changing_storage_directory() {
     let other_paths = Paths::discover(Some(other_home.clone())).unwrap();
     assert_ne!(sandbox.paths.runtime, other_paths.runtime);
     assert_eq!(sandbox.paths.daemon_lock(), other_paths.daemon_lock());
-    let output = Command::new(CLI)
+    let mut command = Command::new(CLI);
+    command
         .arg("--home")
         .arg(&other_home)
-        .args(["daemon", "serve"])
-        .output()
-        .unwrap();
+        .args(["daemon", "serve"]);
+    let output = output_with_timeout(&mut command, Duration::from_secs(5));
     assert!(output.status.success());
     assert!(!other_paths.runtime.join("daemon.pid").exists());
     assert_eq!(
