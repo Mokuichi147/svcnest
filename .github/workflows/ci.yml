@@ -37,7 +37,11 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Tests
-        run: cargo test --locked --all-targets -- --test-threads=3
+        shell: bash
+        run: |
+          threads=3
+          if [ "${{ runner.os }}" = "Windows" ]; then threads=1; fi
+          cargo test --locked --all-targets -- --test-threads="$threads"
       - name: Release build
         run: cargo build --locked --release
       - name: JSON Schema validation
