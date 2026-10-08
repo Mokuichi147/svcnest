@@ -187,7 +187,19 @@ fn atomic_updates_are_always_readable() {
     let reader_path = path.clone();
     let reader = std::thread::spawn(move || {
         for _ in 0..2000 {
-            let bytes = fs::read(&reader_path).unwrap();
+            let bytes = loop {
+                match fs::read(&reader_path) {
+                    Ok(bytes) => break bytes,
+                    // Windows may briefly reject a reader while ReplaceFileW is
+                    // committing the replacement metadata. Retry the open; a
+                    // successful read must still contain a complete JSON generation.
+                    #[cfg(windows)]
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        std::thread::yield_now();
+                    }
+                    Err(error) => panic!("cannot read atomic file: {error}"),
+                }
+            };
             let _: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         }
     });
