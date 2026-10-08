@@ -489,7 +489,7 @@ pub async fn ensure(paths: &Paths) -> Result<()> {
         .append(true)
         .open(paths.logs.join("daemon.log"))?;
     let executable = std::env::current_exe()?;
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     let executable = crate::runtime::prepare(paths, &executable)?;
     let mut command = ProcessCommand::new(executable);
     command

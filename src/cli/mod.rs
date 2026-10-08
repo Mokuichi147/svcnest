@@ -615,13 +615,13 @@ async fn foreground(paths: &Paths, name: Option<String>) -> Result<i32> {
 async fn daemon_command(paths: Paths, command: DaemonCommand) -> Result<i32> {
     match command {
         DaemonCommand::Serve { source_executable } => {
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             {
                 if let Some(source) = source_executable {
                     return crate::runtime::serve_registered(&paths, &source).await;
                 }
                 if !crate::runtime::is_current_executable(&paths)? {
-                    // 直接 serve を指定してもインストール先の exe を常駐させない。
+                    // 直接 serve を指定してもインストール先の実行ファイルを常駐させない。
                     // 別の保存先の daemon が稼働中なら、従来どおり何もせず終了する。
                     let Some(lock) = Lock::try_acquire(&paths.daemon_lock())? else {
                         return Ok(0);
@@ -631,11 +631,11 @@ async fn daemon_command(paths: Paths, command: DaemonCommand) -> Result<i32> {
                     return Ok(0);
                 }
             }
-            #[cfg(not(windows))]
+            #[cfg(not(any(windows, target_os = "macos")))]
             if source_executable.is_some() {
                 return fail(
                     "UNSUPPORTED_OPTION",
-                    "--source-executable is only used on Windows",
+                    "--source-executable is only used on Windows and macOS",
                 );
             }
             daemon::serve(paths).await?;

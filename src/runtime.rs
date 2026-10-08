@@ -1,20 +1,27 @@
 use crate::paths::{Paths, private_dir};
 use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
+#[cfg(target_os = "macos")]
+use std::os::unix::fs::PermissionsExt;
+#[cfg(windows)]
+use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::{
     fs::{self, OpenOptions},
     io::{Read, Write},
-    os::windows::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
     process::Stdio,
 };
+#[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_READ};
 
 fn source_bytes(source: &Path) -> Result<Vec<u8>> {
-    // 読み取り中の書き換えは拒否し、rename によるインストール更新は許可する。
-    let mut file = OpenOptions::new()
-        .read(true)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
+    // 同じファイルを一回読み取り、rename による更新前後の内容を混在させない。
+    // Windows では読み取り中の書き換えも拒否する。
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    options.share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE);
+    let mut file = options
         .open(source)
         .with_context(|| format!("Cannot open runtime source {}", source.display()))?;
     let mut bytes = Vec::new();
@@ -27,7 +34,11 @@ fn destination(paths: &Paths, bytes: &[u8]) -> PathBuf {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect();
-    paths.home.join("bin").join(digest).join("svcnest.exe")
+    paths.home.join("bin").join(digest).join(if cfg!(windows) {
+        "svcnest.exe"
+    } else {
+        "svcnest"
+    })
 }
 
 pub fn executable_path(paths: &Paths, source: &Path) -> Result<PathBuf> {
@@ -40,9 +51,18 @@ fn matches(path: &Path, bytes: &[u8]) -> Result<bool> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error.into()),
     };
+    let regular = metadata.is_file() && !metadata.file_type().is_symlink();
+    #[cfg(windows)]
+    let regular = regular && metadata.file_attributes() & 0x400 == 0;
     ensure!(
-        metadata.is_file() && metadata.file_attributes() & 0x400 == 0,
+        regular,
         "Runtime executable must be a regular file: {}",
+        path.display()
+    );
+    #[cfg(target_os = "macos")]
+    ensure!(
+        metadata.permissions().mode() & 0o100 != 0,
+        "Runtime executable is not executable: {}",
         path.display()
     );
     ensure!(
@@ -64,6 +84,10 @@ pub fn prepare(paths: &Paths, source: &Path) -> Result<PathBuf> {
     }
     let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
     temporary.write_all(&bytes)?;
+    #[cfg(target_os = "macos")]
+    temporary
+        .as_file()
+        .set_permissions(fs::Permissions::from_mode(0o700))?;
     temporary.as_file().sync_all()?;
     if let Err(error) = temporary.persist_noclobber(&path) {
         // 同時起動した別 CLI が先に配置した場合は、その同じビルドを再利用する。
@@ -71,6 +95,8 @@ pub fn prepare(paths: &Paths, source: &Path) -> Result<PathBuf> {
             return Err(error.error).context("Cannot publish runtime executable");
         }
     }
+    #[cfg(target_os = "macos")]
+    std::fs::File::open(directory)?.sync_all()?;
     Ok(path)
 }
 
@@ -81,22 +107,40 @@ pub fn is_current_executable(paths: &Paths) -> Result<bool> {
 
 pub async fn serve_registered(paths: &Paths, source: &Path) -> Result<i32> {
     let executable = prepare(paths, source)?;
-    // Task Scheduler はコピー側の起動役を監視する。更新元の exe は読み取り後に解放する。
-    // 登録後に更新元だけが更新されても、次のログオンでは新しいコピーを選ぶ。
-    let status = tokio::process::Command::new(executable)
-        .arg("--home")
-        .arg(&paths.home)
-        .args(["daemon", "serve"])
-        .current_dir(&paths.home)
-        .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
-        .kill_on_drop(true)
-        .status()
-        .await
-        .context("Cannot launch the registered svcnest runtime")?;
-    Ok(status.code().unwrap_or(1))
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::process::CommandExt;
+        // exec で PID を維持し、launchd が実際の daemon を監視できるようにする。
+        let error = std::process::Command::new(executable)
+            .arg("--home")
+            .arg(&paths.home)
+            .args(["daemon", "serve"])
+            .current_dir(&paths.home)
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .exec();
+        Err(error).context("Cannot exec the registered svcnest runtime")
+    }
+    #[cfg(windows)]
+    {
+        // Task Scheduler はコピー側の起動役を監視する。更新元の exe は読み取り後に解放する。
+        // 登録後に更新元だけが更新されても、次のログオンでは新しいコピーを選ぶ。
+        let status = tokio::process::Command::new(executable)
+            .arg("--home")
+            .arg(&paths.home)
+            .args(["daemon", "serve"])
+            .current_dir(&paths.home)
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+            .kill_on_drop(true)
+            .status()
+            .await
+            .context("Cannot launch the registered svcnest runtime")?;
+        Ok(status.code().unwrap_or(1))
+    }
 }
 
 #[cfg(test)]
@@ -154,5 +198,23 @@ mod tests {
         fs::write(&cached, b"damaged build").unwrap();
         assert!(prepare(&paths, &source).is_err());
         assert_eq!(fs::read(cached).unwrap(), b"damaged build");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn copies_are_executable_and_symlinks_are_rejected() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths::discover(Some(temp.path().join("state"))).unwrap();
+        let source = temp.path().join("installed");
+        fs::write(&source, b"build").unwrap();
+        let cached = prepare(&paths, &source).unwrap();
+        assert_eq!(
+            fs::metadata(&cached).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        fs::remove_file(&cached).unwrap();
+        symlink(&source, &cached).unwrap();
+        assert!(prepare(&paths, &source).is_err());
     }
 }

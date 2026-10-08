@@ -71,7 +71,7 @@ pub fn registered(paths: &Paths) -> Result<bool> {
 pub fn render(paths: &Paths, executable: &Path) -> Result<String> {
     #[cfg(target_os = "macos")]
     {
-        Ok(macos::render(paths, executable))
+        macos::render(paths, executable)
     }
     #[cfg(target_os = "linux")]
     {
@@ -84,18 +84,32 @@ pub fn render(paths: &Paths, executable: &Path) -> Result<String> {
 }
 
 pub async fn install(paths: &Paths) -> Result<()> {
+    let loaded = registered(paths)? && registration_loaded(paths).await;
+    #[cfg(target_os = "macos")]
+    let definition = {
+        let source = fs::canonicalize(std::env::current_exe()?)?;
+        if loaded
+            && macos::registration_current(paths, &source, &fs::read(registration_path(paths)?)?)
+        {
+            return Ok(());
+        }
+        let runtime = crate::runtime::prepare(paths, &source)?;
+        macos::render_runtime(paths, &runtime, &source)
+    };
     #[cfg(windows)]
     let definition = {
         let source = fs::canonicalize(std::env::current_exe()?)?;
         let runtime = crate::runtime::prepare(paths, &source)?;
         windows::render_runtime(paths, &runtime, &source)?
     };
-    if registered(paths)? && registration_loaded(paths).await {
+    if loaded {
         #[cfg(windows)]
         if fs::read(registration_path(paths)?)? == windows::registration_bytes(&definition) {
             return Ok(());
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        macos::uninstall(paths).await?;
+        #[cfg(not(any(windows, target_os = "macos")))]
         return Ok(());
     }
     let path = registration_path(paths)?;
@@ -105,7 +119,7 @@ pub async fn install(paths: &Paths) -> Result<()> {
         Err(error) => return Err(error.into()),
     };
     fs::create_dir_all(path.parent().context("Registration file has no parent")?)?;
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     let definition = render(paths, &fs::canonicalize(std::env::current_exe()?)?)?;
     #[cfg(windows)]
     let bytes = windows::registration_bytes(&definition);
@@ -130,6 +144,10 @@ pub async fn install(paths: &Paths) -> Result<()> {
         // 修復に失敗しても、以前のログイン時登録定義は失わない。
         if let Some(bytes) = previous {
             atomic_write(&path, &bytes)?;
+            #[cfg(target_os = "macos")]
+            if loaded {
+                let _ = macos::install(paths, &path).await;
+            }
         } else {
             crate::logging::remove_if_exists(&path)?;
         }

@@ -4,7 +4,7 @@
 
 | 対象 | 結果 |
 |---|---|
-| macOS arm64 / Rust 1.98 stable | 全 42 テスト成功、fmt / Clippy 成功、release ビルド成功 |
+| macOS arm64 / Rust 1.98 stable | 常駐中更新の macOS 対応後、全 51 テスト成功、fmt / Clippy 成功、release ビルド成功 |
 | macOS x86_64 | 全ターゲットの Clippy / 型チェック成功。実行は未検証 |
 | Windows x64 / Rust 1.98 stable | 空の端末画面の修正後、全 45 テスト成功、fmt / Clippy 成功、release ビルド成功。Task Scheduler と foreground Ctrl+C は既存の実機検証も成功 |
 | Linux x86_64 | 全ターゲットの Clippy / 型チェック成功。実行は未検証 |
@@ -36,6 +36,10 @@ Windows の `.bat` / `.cmd` / `.ps1` の直接登録もローカルで検証し�
 Windows の background runner が空の端末画面を開く問題を修正し、画面の有無と CTRL_BREAK による親子の正常停止を確認する E2E テストを追加しました。修正後の全 45 テスト、fmt、Clippy、release ビルドは成功しています。daemon 経由の E2E と、一時設定の runner を `CREATE_NO_WINDOW` で直接起動する検証の両方で、runner・対象・子が同じ画面なしの console を共有し、親子とも CTRL_BREAK を受信して終了コード 0 で停止し、対象プロセスが残らないことを確認しました。インストール先の実行ファイルを使用中の daemon を停止した後、`cargo install --path . --locked` による更新も成功しています。修正後の GitHub Actions の実行は未確認です。
 
 専用ブランチの常駐中更新対応では、単体・共通テスト 30 件と、稼働中のコピーを止めずに更新元の exe を rename・差し替えする独立 E2E が成功しました。対象と子の PID が維持され、旧コピーが変わらず、同じバージョン番号の別ビルドが別のコピーへ配置されることを実プロセスで確認しています。同時配置、壊れたコピーの拒否、自動起動定義のコピー先と更新元もテストしています。Windows の fmt / Clippy / release ビルド、macOS arm64 の全ターゲット型チェックも成功しました。daemon 経由の更新と、古い自動起動役から新版を選ぶ E2E は CI に追加しています。ローカルでは稼働中の 3 サービスを停止せず、ユーザー単位の daemon を使う E2E 一式の再実行は行っていません。
+
+macOS もビルド別コピーから常駐する方式に対応しました。macOS arm64 / Rust 1.98 で全 51 テスト、fmt、Clippy、release ビルドが成功し、macOS Intel、Windows x64、Linux x86_64 の全ターゲット型チェックも成功しました。共通 E2E は署名を維持した異なる Mach-O への更新、daemon と対象・子孫の PID 維持、旧コピーの保持、次回 daemon 起動と旧自動起動役からの新版選択を確認しています。実 LaunchAgent の検証でも、更新後の enable / daemon install が登録と稼働中 PID を維持し、次回起動では新版へ同じ PID で exec することが成功しました。
+
+`scripts/macos-install-update-smoke.py` では、専用の一時インストール先を 1.0.0 から 1.0.1 へ実際の `cargo install --offline --locked --force` で更新しました。daemon PID 48795、サービス PID 48826 は更新中も維持され、次回 daemon 起動で 1.0.1 の別コピーが選ばれました。この検証と LaunchAgent の常駐中更新検証は macOS arm64 / Intel の CI に追加しています。この段落はローカル実行結果を記載しています。
 
 `scripts/terminal-background-smoke.py` では実際の擬似端末から add / start を実行し、その端末セッションを切断した後も background サービスが同じ PID で稼働することを確認しました。
 

@@ -462,11 +462,11 @@ fn windows_background_tree_has_no_console_window_and_stops_gracefully() {
     }
 }
 
-#[cfg(windows)]
-struct WindowsChildGuard(std::process::Child);
+#[cfg(any(windows, target_os = "macos"))]
+struct RuntimeChildGuard(std::process::Child);
 
-#[cfg(windows)]
-impl Drop for WindowsChildGuard {
+#[cfg(any(windows, target_os = "macos"))]
+impl Drop for RuntimeChildGuard {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
@@ -522,7 +522,7 @@ fn windows_running_copy_allows_installation_updates_without_stopping_its_tree() 
         .into(),
     };
     config::save(&paths, &config).unwrap();
-    let mut runner = WindowsChildGuard(
+    let mut runner = RuntimeChildGuard(
         Command::new(&cached)
             .arg("--home")
             .arg(&paths.home)
@@ -596,13 +596,29 @@ fn process_executable(pid: u32) -> PathBuf {
     .unwrap()
 }
 
-#[cfg(windows)]
+#[cfg(target_os = "macos")]
+fn process_executable(pid: u32) -> PathBuf {
+    use std::{ffi::CStr, os::unix::ffi::OsStrExt};
+    let mut buffer = vec![0u8; 4096];
+    let length =
+        unsafe { libc::proc_pidpath(pid as i32, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
+    assert!(length > 0);
+    let path = CStr::from_bytes_until_nul(&buffer).unwrap();
+    fs::canonicalize(Path::new(std::ffi::OsStr::from_bytes(path.to_bytes()))).unwrap()
+}
+
+#[cfg(any(windows, target_os = "macos"))]
 #[test]
-fn windows_cli_can_be_replaced_while_daemon_and_services_keep_running() {
+fn runtime_cli_can_be_replaced_while_daemon_and_services_keep_running() {
+    #[cfg(windows)]
     use std::os::windows::process::CommandExt;
 
     let mut sandbox = Sandbox::new();
-    sandbox.cli = sandbox.temp.path().join("installed svcnest.exe");
+    sandbox.cli = sandbox.temp.path().join(if cfg!(windows) {
+        "installed svcnest.exe"
+    } else {
+        "installed svcnest"
+    });
     fs::copy(CLI, &sandbox.cli).unwrap();
     sandbox.add("api", "tree", "never", &sandbox.project);
     sandbox.ok(&["start"]);
@@ -614,11 +630,36 @@ fn windows_cli_can_be_replaced_while_daemon_and_services_keep_running() {
     let original = svcnest::runtime::executable_path(&sandbox.paths, &sandbox.cli).unwrap();
     assert_eq!(process_executable(daemon_pid), original);
     let original_bytes = fs::read(&original).unwrap();
-    // 同じバージョン番号の別ビルドを、PE の末尾データで再現する。
-    let mut updated_bytes = original_bytes.clone();
-    updated_bytes.extend_from_slice(b"svcnest update fixture");
-    fs::rename(&sandbox.cli, sandbox.temp.path().join("previous.exe")).unwrap();
-    fs::write(&sandbox.cli, &updated_bytes).unwrap();
+    #[cfg(windows)]
+    {
+        // 同じバージョン番号の別ビルドを、PE の末尾データで再現する。
+        let mut updated_bytes = original_bytes.clone();
+        updated_bytes.extend_from_slice(b"svcnest update fixture");
+        fs::rename(&sandbox.cli, sandbox.temp.path().join("previous.exe")).unwrap();
+        fs::write(&sandbox.cli, &updated_bytes).unwrap();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // 署名を有効に保ちつつ内容の異なる Mach-O を作り、atomic rename で更新する。
+        let next = sandbox.temp.path().join("updated svcnest");
+        fs::copy(&sandbox.cli, &next).unwrap();
+        let mut signing = Command::new("/usr/bin/codesign");
+        signing
+            .args([
+                "--force",
+                "--sign",
+                "-",
+                "--identifier",
+                "svcnest.runtime-update.fixture",
+            ])
+            .arg(&next);
+        assert!(
+            status_with_timeout(&mut signing, Duration::from_secs(30))
+                .unwrap()
+                .success()
+        );
+        fs::rename(next, &sandbox.cli).unwrap();
+    }
     sandbox.ok(&["start"]);
     assert_eq!(sandbox.pid("api"), pids[0]);
     assert_eq!(process_executable(daemon_pid), original);
@@ -637,23 +678,22 @@ fn windows_cli_can_be_replaced_while_daemon_and_services_keep_running() {
     sandbox.wait_pids("api", 6);
     sandbox.ok(&["daemon", "stop"]);
 
-    // 古い Task Scheduler の起動役でも、更新されたインストール先を毎回読み直す。
+    // 古い OS 登録の起動役でも、更新されたインストール先を毎回読み直す。
     let mut config = config::load_named(&sandbox.paths, "api").unwrap();
     config.enabled = true;
     config::save(&sandbox.paths, &config).unwrap();
-    let mut bootstrap = WindowsChildGuard(
-        Command::new(&original)
-            .arg("--home")
-            .arg(&sandbox.home)
-            .args(["daemon", "serve", "--source-executable"])
-            .arg(&sandbox.cli)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
-            .spawn()
-            .unwrap(),
-    );
+    let mut command = Command::new(&original);
+    command
+        .arg("--home")
+        .arg(&sandbox.home)
+        .args(["daemon", "serve", "--source-executable"])
+        .arg(&sandbox.cli)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    let mut bootstrap = RuntimeChildGuard(command.spawn().unwrap());
     wait_for(|| (sandbox.state("api") == ServiceState::Running).then_some(()));
     let registered_pid: u32 = fs::read_to_string(sandbox.paths.runtime.join("daemon.pid"))
         .unwrap()
@@ -661,8 +701,19 @@ fn windows_cli_can_be_replaced_while_daemon_and_services_keep_running() {
         .unwrap();
     assert_eq!(process_executable(registered_pid), updated);
     assert!(bootstrap.0.try_wait().unwrap().is_none());
-    assert_eq!(process_executable(bootstrap.0.id()), original);
-    fs::write(&sandbox.cli, &original_bytes).unwrap();
+    #[cfg(windows)]
+    {
+        assert_eq!(process_executable(bootstrap.0.id()), original);
+        fs::write(&sandbox.cli, &original_bytes).unwrap();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        assert_eq!(bootstrap.0.id(), registered_pid);
+        assert_eq!(process_executable(bootstrap.0.id()), updated);
+        let restored = sandbox.temp.path().join("restored svcnest");
+        fs::copy(&original, &restored).unwrap();
+        fs::rename(restored, &sandbox.cli).unwrap();
+    }
     assert!(is_alive(registered_pid));
     sandbox.wait_pids("api", 9);
     sandbox.ok(&["daemon", "stop"]);

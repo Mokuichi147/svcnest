@@ -121,21 +121,21 @@ svcnest add api \
 
 Unix の IPC は所有者専用のディレクトリ内にある Unix Domain Socket、Windows は現在のユーザーだけを許可する DACL を持つ Named Pipe です。ネットワークポートは開きません。daemon のロックとサービスごとのロックにより二重起動を防ぎます。daemon との制御パイプが閉じると runner は対象ツリーを停止し、停止完了までサービスのロックを保持します。
 
-### Windows での常駐中の更新
+### macOS / Windows での常駐中の更新
 
-Windows の daemon と runner は、保存先の `bin/<SHA-256>/svcnest.exe` に配置したコピーから動きます。ハッシュは exe の内容から計算するため、同じバージョン番号で再ビルドしても別のコピーになります。常駐中のコピーを上書きせず、通常どおり `cargo install --path . --locked` でインストール先を更新できます。
+macOS と Windows の daemon と runner は、保存先の `bin/<SHA-256>/svcnest`（Windows は `svcnest.exe`）に配置したコピーから動きます。ハッシュは実行ファイルの内容から計算するため、同じバージョン番号で再ビルドしても別のコピーになります。常駐中のコピーを上書きせず、通常どおり `cargo install --path . --locked` でインストール先を更新できます。macOS のコピーは実行権限を持ち、元の Mach-O と署名の内容を保持します。
 
-更新中も既存 daemon とサービスは同じ PID で動き続けます。新しい daemon は次回起動時に使います。Task Scheduler もコピー側の起動役を実行し、その都度インストール先から現在のビルドを選ぶため、更新のたびに自動起動を登録し直す必要はありません。既存の自動起動定義は `enable` / `daemon install` で新しい方式へ移行します。実行中や OS 登録で参照中のコピーを残すため、古いコピーは自動削除しません。
+更新中も既存 daemon とサービスは同じ PID で動き続けます。新しい daemon は次回起動時に使います。LaunchAgent と Task Scheduler もコピー側の起動役を実行し、その都度インストール先から現在のビルドを選ぶため、更新のたびに自動起動を登録し直す必要はありません。macOS では更新後の `enable` / `daemon install` も稼働中の LaunchAgent とサービスを維持します。既存の自動起動定義は `enable` / `daemon install` で新しい方式へ移行します。実行中や OS 登録で参照中のコピーを残すため、古いコピーは自動削除しません。
 
-この方式を導入する前の daemon から移行する初回は、インストール先の exe を解放してから更新します。
+この方式を導入する前の daemon から移行する初回は、daemon を停止してから更新します。
 
-```powershell
+```sh
 svcnest daemon stop
 cargo install --path . --locked
 svcnest daemon install
 ```
 
-`daemon install` は自動起動を登録して daemon を開始します。稼働中 daemon への変更の即時適用には daemon の再起動が必要です。また、インストール先の CLI で `run` や `logs -f` を実行中の場合は、その長時間の CLI コマンドも更新先の exe を使用するため、更新前に終了してください。
+`daemon install` は自動起動を登録して daemon を開始します。稼働中 daemon への変更の即時適用には daemon の再起動が必要です。Windows ではインストール先の CLI で `run` や `logs -f` を実行中の場合、その長時間の CLI コマンドも更新先の exe を使用するため、更新前に終了してください。
 
 `status --json` と `list --json` は同じ v1 スキーマを使用します。定義は [schema/status-v1.json](schema/status-v1.json)、設計は [docs/architecture.md](docs/architecture.md) を参照してください。
 
