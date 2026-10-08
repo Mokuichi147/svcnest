@@ -44,6 +44,10 @@ impl RunnerHandle {
         // launchd の daemon グループ終了処理から runner を分離し、EOF による回収を完了させる。
         #[cfg(unix)]
         command.process_group(0);
+        // console を持たない daemon から起動しても、runner 用の画面を作らない。
+        // 対象プロセスはこの非表示 console を継承し、CTRL_BREAK で停止できる。
+        #[cfg(windows)]
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
         let mut child = command.spawn()?;
         let control = child.stdin.take().context("Runner control pipe missing")?;
         let output = child.stdout.take().context("Runner event pipe missing")?;

@@ -8,17 +8,13 @@ use tokio::process::Child;
 use windows_sys::Win32::{
     Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE},
     System::{
-        Console::{
-            AllocConsole, CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent, GetConsoleWindow,
-            SetConsoleCtrlHandler,
-        },
+        Console::{CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent, SetConsoleCtrlHandler},
         Diagnostics::ToolHelp::{
             CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
         },
         JobObjects::*,
         Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME},
     },
-    UI::WindowsAndMessaging::{SW_HIDE, ShowWindow},
 };
 
 pub struct Job {
@@ -130,11 +126,8 @@ fn resume_main_thread(pid: u32) -> Result<()> {
 }
 
 pub fn prepare_console() {
-    if unsafe { GetConsoleWindow() }.is_null() && unsafe { AllocConsole() } != 0 {
-        unsafe {
-            ShowWindow(GetConsoleWindow(), SW_HIDE);
-        }
-    }
+    // runner の CREATE_NO_WINDOW でも console signal は使える。
+    // GetConsoleWindow が null でも、表示用 console を追加で割り当てない。
     // foreground の対象へ Ctrl+C の無視設定を継承させない。
     unsafe {
         SetConsoleCtrlHandler(None, 0);

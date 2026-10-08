@@ -37,6 +37,8 @@ Unix の対象は別のプロセスグループで起動します。runner は�
 
 Windows の対象は `CREATE_SUSPENDED` で作成し、`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` を持つ Job Object へ割り当ててからメインスレッドを再開します。生成直後に子孫が Job Object の外へ逃れる競合を避けます。停止では console の CTRL_BREAK を試し、期限後に Job Object を終了し、ActiveProcesses がゼロになるまで確認します。API の根拠は [Microsoft の Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects) と [Process Creation Flags](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags) です。
 
+Windows の background runner は `CREATE_NO_WINDOW` で起動します。console を持たない daemon から起動しても空の端末画面を作らず、対象とその子孫は runner の画面なしの console を継承します。対象には `CREATE_NEW_PROCESS_GROUP` を指定して、共有 console 内で対象グループへ CTRL_BREAK を送ります。画面の有無から console の接続状態を推測して `AllocConsole` を呼ぶ処理は行いません。
+
 親の自然終了時も子孫を停止してから再起動を判断します。手動停止と制御チャネル切断では再起動しません。再起動の間隔と回数制限は `runner::policy` にあり、実時間の待機を使わずにポリシーをテストできます。
 
 ## daemon の異常終了

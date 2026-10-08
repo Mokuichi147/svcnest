@@ -301,6 +301,11 @@ fn fixture() {
     if mode == "fail" {
         std::process::exit(7);
     }
+    #[cfg(windows)]
+    if matches!(mode.as_str(), "console" | "console-child") {
+        windowless_console_fixture(&mode);
+        return;
+    }
     if mode == "path-parent" {
         let child = if cfg!(windows) {
             "path-probe.exe"
@@ -367,6 +372,91 @@ fn fixture() {
         println!("probe heartbeat");
         std::io::stdout().flush().unwrap();
         thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(windows)]
+fn windowless_console_fixture(mode: &str) {
+    use windows_sys::Win32::System::Console::{GetConsoleProcessList, GetConsoleWindow};
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let mut signal = tokio::signal::windows::ctrl_break().unwrap();
+        let mut child = (mode == "console").then(|| {
+            Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "fixture", "--nocapture"])
+                .env("SVCNEST_E2E_MODE", "console-child")
+                .spawn()
+                .unwrap()
+        });
+        let path = PathBuf::from(std::env::var_os("SVCNEST_E2E_PIDS").unwrap());
+        if child.is_some() {
+            // CreateProcess の復帰時点では子の console 接続がまだ完了していない場合がある。
+            let ready = path.with_extension("console-child.json");
+            wait_for(|| ready.is_file().then_some(()));
+        }
+        let mut pids = [0u32; 16];
+        let count = unsafe { GetConsoleProcessList(pids.as_mut_ptr(), pids.len() as u32) };
+        assert!(count > 0 && count as usize <= pids.len());
+        let report = serde_json::json!({
+            "has_console_window": !unsafe { GetConsoleWindow() }.is_null(),
+            "console_processes": &pids[..count as usize],
+        });
+        fs::write(
+            path.with_extension(format!("{mode}.json")),
+            serde_json::to_vec(&report).unwrap(),
+        )
+        .unwrap();
+        signal.recv().await.unwrap();
+        if let Some(child) = child.as_mut() {
+            assert!(child.wait().unwrap().success());
+        }
+        println!("console-break-received: mode={mode}");
+    });
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_background_tree_has_no_console_window_and_stops_gracefully() {
+    let sandbox = Sandbox::new();
+    sandbox.add("api", "console", "never", &sandbox.project);
+    let mut config = config::load_named(&sandbox.paths, "api").unwrap();
+    config.stop_timeout_ms = 2000;
+    config::save(&sandbox.paths, &config).unwrap();
+    sandbox.ok(&["start"]);
+    let pids = sandbox.wait_pids("api", 2);
+    for mode in ["console", "console-child"] {
+        let path = sandbox
+            .temp
+            .path()
+            .join("api-pids")
+            .with_extension(format!("{mode}.json"));
+        let report: serde_json::Value = wait_for(|| {
+            fs::read(&path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        });
+        assert_eq!(report["has_console_window"], false, "{mode}: {report}");
+        let console_processes = report["console_processes"].as_array().unwrap();
+        // runner、対象、子が同じ画面なしの console を共有している。
+        assert!(console_processes.len() >= 3, "{mode}: {report}");
+        assert!(pids.iter().all(|pid| {
+            console_processes
+                .iter()
+                .any(|value| value.as_u64() == Some(u64::from(*pid)))
+        }));
+    }
+    sandbox.ok(&["stop"]);
+    let status = sandbox.snapshot(&["status", "api", "--json"]);
+    assert_eq!(status.services[0].runtime.state, ServiceState::Stopped);
+    assert_eq!(status.services[0].runtime.last_exit_code, Some(0));
+    assert!(pids.iter().all(|pid| !is_alive(*pid)));
+    let logs = sandbox.ok(&["logs", "api", "-n", "100"]);
+    for mode in ["console", "console-child"] {
+        assert!(logs.contains(&format!("console-break-received: mode={mode}")));
     }
 }
 
