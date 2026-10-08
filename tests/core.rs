@@ -199,13 +199,13 @@ fn atomic_updates_are_always_readable() {
 
 #[cfg(windows)]
 fn read_atomic(path: &Path) -> Vec<u8> {
-    for _ in 0..10_000 {
+    for _ in 0..5_000 {
         match fs::read(path) {
             Ok(bytes) => return bytes,
             // Windows may briefly reject a reader while ReplaceFileW is committing
             // replacement metadata. A successful read must still be complete JSON.
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                std::thread::yield_now();
+            Err(error) if matches!(error.raw_os_error(), Some(2 | 5 | 32 | 33)) => {
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
             Err(error) => panic!("cannot read atomic file: {error}"),
         }
