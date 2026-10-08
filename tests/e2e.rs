@@ -2,9 +2,9 @@
 use std::process::Child;
 use std::{
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
-    process::{Command, Output, Stdio},
+    process::{Command, ExitStatus, Output, Stdio},
     thread,
     time::{Duration, Instant},
 };
@@ -48,7 +48,9 @@ impl Sandbox {
         command
     }
     fn output_at(&self, cwd: &Path, args: &[&str]) -> Output {
-        self.command(cwd).args(args).output().unwrap()
+        let mut command = self.command(cwd);
+        command.args(args);
+        output_with_timeout(&mut command, Duration::from_secs(30))
     }
     fn output(&self, args: &[&str]) -> Output {
         self.output_at(&self.project, args)
@@ -134,14 +136,66 @@ impl Sandbox {
 
 impl Drop for Sandbox {
     fn drop(&mut self) {
-        let _ = self
-            .command(&self.project)
+        let mut command = self.command(&self.project);
+        command
             .args(["daemon", "stop"])
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+            .stderr(Stdio::null());
+        let _ = status_with_timeout(&mut command, Duration::from_secs(30));
         #[cfg(unix)]
         let _ = fs::remove_dir_all(&self.paths.runtime);
+    }
+}
+
+fn status_with_timeout(command: &mut Command, timeout: Duration) -> Option<ExitStatus> {
+    let mut child = command.spawn().ok()?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait().ok()? {
+            return Some(status);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn output_with_timeout(command: &mut Command, timeout: Duration) -> Output {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let description = format!("{command:?}");
+    let mut child = command.spawn().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+    let stdout_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).unwrap();
+        bytes
+    });
+    let stderr_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).unwrap();
+        bytes
+    });
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return Output {
+                status,
+                stdout: stdout_reader.join().unwrap(),
+                stderr: stderr_reader.join().unwrap(),
+            };
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
+            panic!("Timed out waiting for e2e command: {description}");
+        }
+        thread::sleep(Duration::from_millis(25));
     }
 }
 
