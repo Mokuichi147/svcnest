@@ -187,7 +187,10 @@ pub enum DaemonCommand {
         json: bool,
     },
     #[command(about = "Serve local IPC (used by the OS service manager)")]
-    Serve,
+    Serve {
+        #[arg(long, hide = true)]
+        source_executable: Option<PathBuf>,
+    },
 }
 
 fn parse_env(value: &str) -> std::result::Result<(String, String), String> {
@@ -611,7 +614,32 @@ async fn foreground(paths: &Paths, name: Option<String>) -> Result<i32> {
 
 async fn daemon_command(paths: Paths, command: DaemonCommand) -> Result<i32> {
     match command {
-        DaemonCommand::Serve => daemon::serve(paths).await?,
+        DaemonCommand::Serve { source_executable } => {
+            #[cfg(windows)]
+            {
+                if let Some(source) = source_executable {
+                    return crate::runtime::serve_registered(&paths, &source).await;
+                }
+                if !crate::runtime::is_current_executable(&paths)? {
+                    // 直接 serve を指定してもインストール先の exe を常駐させない。
+                    // 別の保存先の daemon が稼働中なら、従来どおり何もせず終了する。
+                    let Some(lock) = Lock::try_acquire(&paths.daemon_lock())? else {
+                        return Ok(0);
+                    };
+                    drop(lock);
+                    daemon::ensure(&paths).await?;
+                    return Ok(0);
+                }
+            }
+            #[cfg(not(windows))]
+            if source_executable.is_some() {
+                return fail(
+                    "UNSUPPORTED_OPTION",
+                    "--source-executable is only used on Windows",
+                );
+            }
+            daemon::serve(paths).await?;
+        }
         DaemonCommand::Install { dry_run } => {
             if dry_run {
                 print!("{}", platform::render(&paths, &std::env::current_exe()?)?);

@@ -35,6 +35,8 @@ Windows の `.bat` / `.cmd` / `.ps1` の直接登録もローカルで検証し�
 
 Windows の background runner が空の端末画面を開く問題を修正し、画面の有無と CTRL_BREAK による親子の正常停止を確認する E2E テストを追加しました。修正後の全 45 テスト、fmt、Clippy、release ビルドは成功しています。daemon 経由の E2E と、一時設定の runner を `CREATE_NO_WINDOW` で直接起動する検証の両方で、runner・対象・子が同じ画面なしの console を共有し、親子とも CTRL_BREAK を受信して終了コード 0 で停止し、対象プロセスが残らないことを確認しました。インストール先の実行ファイルを使用中の daemon を停止した後、`cargo install --path . --locked` による更新も成功しています。修正後の GitHub Actions の実行は未確認です。
 
+専用ブランチの常駐中更新対応では、単体・共通テスト 30 件と、稼働中のコピーを止めずに更新元の exe を rename・差し替えする独立 E2E が成功しました。対象と子の PID が維持され、旧コピーが変わらず、同じバージョン番号の別ビルドが別のコピーへ配置されることを実プロセスで確認しています。同時配置、壊れたコピーの拒否、自動起動定義のコピー先と更新元もテストしています。Windows の fmt / Clippy / release ビルド、macOS arm64 の全ターゲット型チェックも成功しました。daemon 経由の更新と、古い自動起動役から新版を選ぶ E2E は CI に追加しています。ローカルでは稼働中の 3 サービスを停止せず、ユーザー単位の daemon を使う E2E 一式の再実行は行っていません。
+
 `scripts/terminal-background-smoke.py` では実際の擬似端末から add / start を実行し、その端末セッションを切断した後も background サービスが同じ PID で稼働することを確認しました。
 
 `scripts/restart-policy-smoke.py` は release バイナリの標準 on-failure を実時間で検証しました。起動間の待機は約 1.05 / 2.06 / 4.06 / 8.06 / 16.07 秒、その後は約 30.06 秒で、10 回の再起動後に `failed` / `restart-limit`、PID なし、最後の終了コード 7 になりました。別サービスを 61 秒稼働させ、次の待機が約 1.07 秒に戻ることと、手動停止後に起動しないことも確認しています。

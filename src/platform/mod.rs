@@ -84,7 +84,18 @@ pub fn render(paths: &Paths, executable: &Path) -> Result<String> {
 }
 
 pub async fn install(paths: &Paths) -> Result<()> {
+    #[cfg(windows)]
+    let definition = {
+        let source = fs::canonicalize(std::env::current_exe()?)?;
+        let runtime = crate::runtime::prepare(paths, &source)?;
+        windows::render_runtime(paths, &runtime, &source)?
+    };
     if registered(paths)? && registration_loaded(paths).await {
+        #[cfg(windows)]
+        if fs::read(registration_path(paths)?)? == windows::registration_bytes(&definition) {
+            return Ok(());
+        }
+        #[cfg(not(windows))]
         return Ok(());
     }
     let path = registration_path(paths)?;
@@ -94,6 +105,7 @@ pub async fn install(paths: &Paths) -> Result<()> {
         Err(error) => return Err(error.into()),
     };
     fs::create_dir_all(path.parent().context("Registration file has no parent")?)?;
+    #[cfg(not(windows))]
     let definition = render(paths, &fs::canonicalize(std::env::current_exe()?)?)?;
     #[cfg(windows)]
     let bytes = windows::registration_bytes(&definition);

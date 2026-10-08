@@ -488,7 +488,10 @@ pub async fn ensure(paths: &Paths) -> Result<()> {
         .create(true)
         .append(true)
         .open(paths.logs.join("daemon.log"))?;
-    let mut command = ProcessCommand::new(std::env::current_exe()?);
+    let executable = std::env::current_exe()?;
+    #[cfg(windows)]
+    let executable = crate::runtime::prepare(paths, &executable)?;
+    let mut command = ProcessCommand::new(executable);
     command
         .arg("--home")
         .arg(&paths.home)

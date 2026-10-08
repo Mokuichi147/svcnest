@@ -282,14 +282,20 @@ pub fn quote_arg(arg: &str) -> String {
 }
 
 pub fn render(paths: &Paths, executable: &Path) -> Result<String> {
+    let runtime = crate::runtime::executable_path(paths, executable)?;
+    render_runtime(paths, &runtime, executable)
+}
+
+pub(crate) fn render_runtime(paths: &Paths, runtime: &Path, source: &Path) -> Result<String> {
     let sid = user_sid()?;
     let args = format!(
-        "--home {} daemon serve",
-        quote_arg(&paths.home.to_string_lossy())
+        "--home {} daemon serve --source-executable {}",
+        quote_arg(&paths.home.to_string_lossy()),
+        quote_arg(&source.to_string_lossy())
     );
     Ok(format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n  <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{sid}</UserId></LogonTrigger></Triggers>\n  <Principals><Principal id=\"User\"><UserId>{sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>\n  <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowStartOnDemand>true</AllowStartOnDemand><StartWhenAvailable>true</StartWhenAvailable><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure></Settings>\n  <Actions Context=\"User\"><Exec><Command>{}</Command><Arguments>{}</Arguments><WorkingDirectory>{}</WorkingDirectory></Exec></Actions>\n</Task>\n",
-        xml_escape(&executable.to_string_lossy()),
+        xml_escape(&runtime.to_string_lossy()),
         xml_escape(&args),
         xml_escape(&paths.home.to_string_lossy())
     ))
