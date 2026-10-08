@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel, windows-2022, ubuntu-24.04, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
+        with:
+          version: '0.12.10'
+          enable-cache: false
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --locked --all-targets -- --test-threads=3
+      - name: Release build
+        run: cargo build --locked --release
+      - name: JSON Schema validation
+        shell: bash
+        run: |
+          python -m pip install -r scripts/requirements-test.txt
+          binary=target/release/svcnest
+          if [ "${{ runner.os }}" = "Windows" ]; then binary=target/release/svcnest.exe; fi
+          python scripts/check-json-schema.py --binary "$binary"
+      - name: Terminal disconnect
+        if: runner.os != 'Windows'
+        run: python scripts/terminal-background-smoke.py --binary target/release/svcnest
+      - name: Restart policy timing
+        shell: bash
+        run: |
+          binary=target/release/svcnest
+          if [ "${{ runner.os }}" = "Windows" ]; then binary=target/release/svcnest.exe; fi
+          python scripts/restart-policy-smoke.py --binary "$binary"
+      - name: Prepare systemd user session
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          test_uid=$(id -u)
+          sudo systemctl start "user@${test_uid}.service"
+          echo "XDG_RUNTIME_DIR=/run/user/${test_uid}" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${test_uid}/bus" >> "$GITHUB_ENV"
+      - name: Native OS integration
+        shell: bash
+        run: |
+          binary=target/release/svcnest
+          if [ "${{ runner.os }}" = "Windows" ]; then binary=target/release/svcnest.exe; fi
+          python scripts/native-os-smoke.py --binary "$binary"
+      - name: Validate LaunchAgent plist
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          target/release/svcnest daemon install --dry-run > "$RUNNER_TEMP/svcnest.plist"
+          plutil -lint "$RUNNER_TEMP/svcnest.plist"
+      - name: Validate Task Scheduler XML
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $registration = [xml](& target/release/svcnest.exe daemon install --dry-run)
+          if ($registration.Task.Principals.Principal.RunLevel -ne 'LeastPrivilege') { throw 'Unexpected task principal' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: svcnest-${{ matrix.os }}
+          path: |
+            target/release/svcnest
+            target/release/svcnest.exe
+          if-no-files-found: error
