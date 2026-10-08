@@ -4,6 +4,8 @@ use anyhow::{Context, Result};
 use std::{
     fs::{self, File, OpenOptions},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 #[derive(Clone, Debug)]
@@ -190,36 +192,66 @@ impl Lock {
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
     let parent = path.parent().context("File has no parent directory")?;
-    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    let (mut temp, temporary) = atomic_temp(parent)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        temp.as_file()
-            .set_permissions(fs::Permissions::from_mode(0o600))?;
+        temp.set_permissions(fs::Permissions::from_mode(0o600))?;
     }
-    temp.write_all(bytes)?;
-    temp.as_file().sync_all()?;
-    #[cfg(windows)]
-    persist_windows(temp, path)?;
-    #[cfg(not(windows))]
-    temp.persist(path).map_err(|e| e.error)?;
-    #[cfg(unix)]
-    File::open(parent)?.sync_all()?;
-    Ok(())
+    let result = (|| {
+        temp.write_all(bytes)?;
+        temp.sync_all()?;
+        drop(temp);
+        #[cfg(windows)]
+        persist_windows(&temporary, path)?;
+        #[cfg(not(windows))]
+        fs::rename(&temporary, path)?;
+        #[cfg(unix)]
+        File::open(parent)?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+static NEXT_ATOMIC_TEMP: AtomicU64 = AtomicU64::new(0);
+
+fn atomic_temp(parent: &Path) -> Result<(File, PathBuf)> {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    for _ in 0..100 {
+        let sequence = NEXT_ATOMIC_TEMP.fetch_add(1, Ordering::Relaxed);
+        let path = parent.join(format!(
+            ".svcnest-atomic-{}-{stamp}-{sequence}",
+            std::process::id()
+        ));
+        match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((file, path)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(anyhow::anyhow!(
+        "Cannot allocate a unique temporary file for atomic update"
+    ))
 }
 
 #[cfg(windows)]
-fn persist_windows(temp: tempfile::NamedTempFile, path: &Path) -> Result<()> {
+fn persist_windows(temporary_path: &Path, path: &Path) -> Result<()> {
     use std::{os::windows::ffi::OsStrExt, ptr::null, thread, time::Duration};
     use windows_sys::Win32::Storage::FileSystem::{
-        FILE_ATTRIBUTE_NORMAL, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-        ReplaceFileW, SetFileAttributesW,
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, ReplaceFileW,
     };
 
-    // NamedTempFile は FILE_FLAG_DELETE_ON_CLOSE で作られるため、置換 API を呼ぶ前に
-    // ファイルハンドルを閉じる。ReplaceFileW は既存ファイルを一つの操作で置換するので、
-    // fs::rename のように読者から一瞬だけ対象が消える窓を作らない。
-    let temp = temp.into_temp_path();
     let wide = |value: &Path| {
         value
             .as_os_str()
@@ -227,11 +259,8 @@ fn persist_windows(temp: tempfile::NamedTempFile, path: &Path) -> Result<()> {
             .chain(Some(0))
             .collect::<Vec<_>>()
     };
-    let temporary = wide(&temp);
+    let temporary = wide(temporary_path);
     let destination = wide(path);
-    if unsafe { SetFileAttributesW(temporary.as_ptr(), FILE_ATTRIBUTE_NORMAL) } == 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
 
     let mut last_error = None;
     for _ in 0..500 {
@@ -256,9 +285,6 @@ fn persist_windows(temp: tempfile::NamedTempFile, path: &Path) -> Result<()> {
             }
         };
         if replaced != 0 {
-            // 置換後の一時パスは存在しない。TempPath の cleanup は不要であり、
-            // 念のため名前を解放して終了する。
-            std::mem::forget(temp);
             return Ok(());
         }
         let error = std::io::Error::last_os_error();
