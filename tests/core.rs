@@ -12,7 +12,7 @@ use svcnest::{
     error::ServiceError,
     ipc::{self, RuntimeStatus},
     logging::{self, RotatingLog},
-    paths::{Lock, Paths, atomic_write},
+    paths::{Lock, Paths, atomic_write, readable_path},
     platform, resolve,
     runner::policy::{Backoff, should_restart},
 };
@@ -372,6 +372,64 @@ fn working_directory_is_canonical_and_must_be_a_directory() {
     );
     fs::write(temp.path().join("file"), "not a directory").unwrap();
     assert!(resolve::executable::working_directory(Some(&temp.path().join("file"))).is_err());
+}
+
+#[test]
+fn readable_paths_preserve_regular_and_device_paths() {
+    for input in [
+        "",
+        "relative/path with spaces",
+        r"C:\プロジェクト\api",
+        r"\\server\share\api",
+        r"\\.\pipe\svcnest-test",
+        r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\api",
+    ] {
+        assert_eq!(readable_path(Path::new(input)).as_ref(), Path::new(input));
+    }
+    #[cfg(unix)]
+    assert_eq!(
+        readable_path(Path::new(r"\\?\C:\literal-filename")).as_ref(),
+        Path::new(r"\\?\C:\literal-filename")
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn readable_windows_paths_handle_drive_unc_and_long_paths() {
+    for (input, expected) in [
+        (r"\\?\C:\", r"C:\"),
+        (
+            r"\\?\C:\プロジェクト\api with spaces",
+            r"C:\プロジェクト\api with spaces",
+        ),
+        (r"\\?\UNC\server\share", r"\\server\share"),
+        (
+            r"\\?\UNC\server\share\プロジェクト\",
+            r"\\server\share\プロジェクト\",
+        ),
+    ] {
+        assert_eq!(
+            readable_path(Path::new(input)).as_ref(),
+            Path::new(expected)
+        );
+    }
+    let long = format!(r"C:\{}\api", "directory\\".repeat(40));
+    let extended = PathBuf::from(format!(r"\\?\{long}"));
+    assert_eq!(readable_path(&extended).as_ref(), Path::new(&long));
+    assert!(extended.to_str().unwrap().starts_with(r"\\?\"));
+}
+
+#[cfg(windows)]
+#[test]
+fn readable_windows_paths_preserve_non_unicode_characters() {
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+    let wide = r"\\?\C:\"
+        .encode_utf16()
+        .chain([0xd800])
+        .collect::<Vec<_>>();
+    let path = PathBuf::from(OsString::from_wide(&wide));
+    let expected = PathBuf::from(OsString::from_wide(&wide[4..]));
+    assert_eq!(readable_path(&path).as_ref(), expected);
 }
 
 #[test]

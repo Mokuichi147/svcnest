@@ -526,8 +526,8 @@ fn project_workflow_resolves_children_and_preserves_registration_environment() {
             .contains("explicit")
     );
     assert_eq!(
-        sandbox.ok_at(&child, &["config", "path"]).trim(),
-        sandbox.paths.config("api").to_str().unwrap()
+        fs::canonicalize(sandbox.ok_at(&child, &["config", "path"]).trim()).unwrap(),
+        sandbox.paths.config("api")
     );
     assert_eq!(
         serde_json::from_str::<Snapshot>(&sandbox.ok_at(&child, &["status", "--json"]))
@@ -1344,6 +1344,97 @@ fn doctor_reports_broken_configs_missing_paths_and_env_files_without_secrets() {
                 .any(|check| check["check"] == name && check["level"] == "error")
         );
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn console_paths_are_readable_while_stored_and_json_paths_remain_canonical() {
+    let sandbox = Sandbox::new();
+    let script = sandbox.project.join("start script.ps1");
+    let env_file = sandbox.project.join(".env");
+    fs::write(&script, "Write-Output 'test'\n").unwrap();
+    fs::write(&env_file, "API_KEY=secret\n").unwrap();
+    let config = config::ServiceConfig {
+        version: 1,
+        name: "api".into(),
+        description: String::new(),
+        cwd: fs::canonicalize(&sandbox.project).unwrap(),
+        command: vec!["powershell.exe".into()],
+        resolved_executable: fs::canonicalize(std::env::current_exe().unwrap()).unwrap(),
+        resolved_script: Some(fs::canonicalize(&script).unwrap()),
+        interpreter_args: vec!["-File".into()],
+        interpreter_environment: Default::default(),
+        enabled: false,
+        restart: config::RestartPolicy::Never,
+        stop_timeout_ms: 300,
+        env_file: Some(fs::canonicalize(&env_file).unwrap()),
+        environment: Default::default(),
+    };
+    assert!(config.cwd.to_str().unwrap().starts_with(r"\\?\"));
+    config::save(&sandbox.paths, &config).unwrap();
+    let saved = fs::read(sandbox.paths.config("api")).unwrap();
+
+    for args in [
+        &["status", "api"][..],
+        &["list"],
+        &["config", "path", "api"],
+        &["daemon", "status"],
+    ] {
+        let output = sandbox.ok(args);
+        assert!(!output.contains(r"\\?\"), "{args:?}: {output}");
+    }
+    // 別の保存先の daemon が稼働している場合、doctor は診断結果を出して 1 を返す。
+    let doctor = sandbox.output(&["doctor"]);
+    let diagnostic = String::from_utf8(doctor.stdout).unwrap();
+    assert!(diagnostic.contains("working-directory"), "{diagnostic}");
+    assert!(!diagnostic.contains(r"\\?\"), "{diagnostic}");
+    let shown_path = sandbox.ok(&["config", "path", "api"]);
+    assert_eq!(
+        fs::canonicalize(shown_path.trim()).unwrap(),
+        sandbox.paths.config("api")
+    );
+    for args in [
+        &["config", "show", "api"][..],
+        &["config", "show", "api", "--show-secrets"],
+    ] {
+        let shown: config::ServiceConfig = toml::from_str(&sandbox.ok(args)).unwrap();
+        for (shown, stored) in [
+            (&shown.cwd, &config.cwd),
+            (&shown.resolved_executable, &config.resolved_executable),
+            (
+                shown.resolved_script.as_ref().unwrap(),
+                config.resolved_script.as_ref().unwrap(),
+            ),
+            (
+                shown.env_file.as_ref().unwrap(),
+                config.env_file.as_ref().unwrap(),
+            ),
+        ] {
+            assert!(!shown.to_str().unwrap().starts_with(r"\\?\"));
+            assert_eq!(fs::canonicalize(shown).unwrap(), *stored);
+        }
+    }
+    for args in [&["status", "api", "--json"][..], &["list", "--json"]] {
+        let snapshot = sandbox.snapshot(args);
+        assert_eq!(snapshot.services[0].cwd, config.cwd);
+        assert_eq!(
+            snapshot.services[0].resolved_executable,
+            config.resolved_executable
+        );
+    }
+    let error = sandbox.output_at(sandbox.temp.path(), &["status"]);
+    assert!(!error.status.success());
+    let message = String::from_utf8(error.stderr).unwrap();
+    assert!(message.contains("SERVICE_NOT_FOUND"));
+    assert!(!message.contains(r"\\?\"), "{message}");
+    assert_eq!(fs::read(sandbox.paths.config("api")).unwrap(), saved);
+
+    fs::write(sandbox.paths.config("api"), "API_KEY = 'missing-quote\n").unwrap();
+    let doctor = sandbox.output(&["doctor"]);
+    assert_eq!(doctor.status.code(), Some(1));
+    let diagnostic = String::from_utf8(doctor.stdout).unwrap();
+    assert!(diagnostic.contains("Invalid TOML config"), "{diagnostic}");
+    assert!(!diagnostic.contains(r"\\?\"), "{diagnostic}");
 }
 
 #[cfg(unix)]

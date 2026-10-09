@@ -25,6 +25,8 @@ svcnest run
 
 登録時にカレントディレクトリを正規化し、実行ファイルを PATH から絶対パスへ解決します。`./target/release/myproject` のような入力はサービスの working directory を基準に解決します。表示用の元のコマンドと、実行用の絶対パスを分けて保存します。
 
+Windows のコンソール出力では、ドライブパスの正規化で付く `\\?\` 接頭辞を除いて表示します。共有フォルダーは `\\server\share\...` 形式で表示します。`config show` のパス項目にも適用し、保存済み設定と `status --json` / `list --json` のパスは実行用の正規化形式を保持します。
+
 引数は argv 配列として実行します。パイプやリダイレクトが必要な場合は、`sh -lc '...'`、`powershell -Command '...'` などを明示的に登録してください。Windows の標準 npm / npx / Node.js 用ランチャーは、参照先の Node.js と JavaScript を絶対パスへ解決するため、`svcnest add mcp -- npx some-mcp-server` と登録できます。これらのランチャーは Node.js を直接起動します。
 
 Windows の `.bat` / `.cmd` / `.ps1` は、普段実行するスクリプトをそのまま登録できます。

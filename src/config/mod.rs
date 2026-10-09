@@ -1,6 +1,6 @@
 use crate::{
     error::fail,
-    paths::{Paths, atomic_write},
+    paths::{Paths, atomic_write, readable_path},
 };
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -143,11 +143,13 @@ impl ServiceConfig {
     pub fn effective_environment(&self) -> Result<BTreeMap<String, String>> {
         let mut env = self.interpreter_environment.clone();
         if let Some(path) = &self.env_file {
-            let iter = dotenvy::from_path_iter(path)
-                .map_err(|_| anyhow::anyhow!("Cannot read env-file {}", path.display()))?;
+            let iter = dotenvy::from_path_iter(path).map_err(|_| {
+                anyhow::anyhow!("Cannot read env-file {}", readable_path(path).display())
+            })?;
             for entry in iter {
-                let (key, value) =
-                    entry.map_err(|_| anyhow::anyhow!("Invalid env-file {}", path.display()))?;
+                let (key, value) = entry.map_err(|_| {
+                    anyhow::anyhow!("Invalid env-file {}", readable_path(path).display())
+                })?;
                 validate_env_key(&key)?;
                 if value.contains('\0') {
                     return fail("INVALID_ENV", "Environment values cannot contain NUL");
@@ -190,10 +192,10 @@ pub fn insert_env(env: &mut BTreeMap<String, String>, key: String, value: String
 
 pub fn load(path: &Path) -> Result<ServiceConfig> {
     let text = fs::read_to_string(path)
-        .with_context(|| format!("Cannot read config {}", path.display()))?;
+        .with_context(|| format!("Cannot read config {}", readable_path(path).display()))?;
     // TOML の診断には入力値が含まれるため、秘密情報を CLI へ出さない。
     let config: ServiceConfig = toml::from_str(&text)
-        .map_err(|_| anyhow::anyhow!("Invalid TOML config: {}", path.display()))?;
+        .map_err(|_| anyhow::anyhow!("Invalid TOML config: {}", readable_path(path).display()))?;
     config.validate()?;
     if path
         .file_stem()

@@ -6,7 +6,7 @@ use crate::{
         ServiceState, ServiceStatus, Snapshot, Target,
     },
     logging,
-    paths::{Lock, Paths},
+    paths::{Lock, Paths, readable_path},
     process, resolve,
     runner::{self, Control},
 };
@@ -527,7 +527,7 @@ pub async fn ensure(paths: &Paths) -> Result<()> {
                     "DAEMON_START_FAILED",
                     format!(
                         "Daemon exited with {status}; inspect {}",
-                        paths.logs.join("daemon.log").display()
+                        readable_path(&paths.logs.join("daemon.log")).display()
                     ),
                 );
             }
@@ -538,7 +538,7 @@ pub async fn ensure(paths: &Paths) -> Result<()> {
         "DAEMON_START_FAILED",
         format!(
             "Cannot connect to daemon; inspect {}",
-            paths.logs.join("daemon.log").display()
+            readable_path(&paths.logs.join("daemon.log")).display()
         ),
     )
 }

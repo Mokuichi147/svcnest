@@ -2,11 +2,35 @@
 use crate::error::fail;
 use anyhow::{Context, Result};
 use std::{
+    borrow::Cow,
     fs::{self, File, OpenOptions},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+// 表示時だけ拡張パスを通常の形式に戻す。保存・実行・IPC 用のパスは変更しない。
+pub fn readable_path(path: &Path) -> Cow<'_, Path> {
+    #[cfg(windows)]
+    {
+        use std::{
+            ffi::OsString,
+            os::windows::ffi::{OsStrExt, OsStringExt},
+            path::{Component, Prefix},
+        };
+        if let Some(Component::Prefix(prefix)) = path.components().next() {
+            let (skip, mut wide) = match prefix.kind() {
+                Prefix::VerbatimDisk(_) => (4, Vec::new()),
+                Prefix::VerbatimUNC(..) => (8, vec![u16::from(b'\\'); 2]),
+                // デバイスやボリュームのパスには通常形式への変換を適用しない。
+                _ => return Cow::Borrowed(path),
+            };
+            wide.extend(path.as_os_str().encode_wide().skip(skip));
+            return Cow::Owned(PathBuf::from(OsString::from_wide(&wide)));
+        }
+    }
+    Cow::Borrowed(path)
+}
 
 #[derive(Clone, Debug)]
 pub struct Paths {
@@ -141,7 +165,8 @@ pub fn private_dir(path: &Path) -> Result<()> {
             Ok(()) => (),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (),
             Err(error) => {
-                return Err(error).with_context(|| format!("Cannot create {}", path.display()));
+                return Err(error)
+                    .with_context(|| format!("Cannot create {}", readable_path(path).display()));
             }
         }
         let metadata = fs::symlink_metadata(path)?;
@@ -153,7 +178,7 @@ pub fn private_dir(path: &Path) -> Result<()> {
                 "UNSAFE_DIRECTORY",
                 format!(
                     "Directory is not owned by the current user: {}",
-                    path.display()
+                    readable_path(path).display()
                 ),
             );
         }

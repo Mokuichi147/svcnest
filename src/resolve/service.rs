@@ -1,6 +1,7 @@
 use crate::{
     config::{ServiceConfig, validate_name},
     error::fail,
+    paths::readable_path,
 };
 use anyhow::Result;
 use std::{fs, path::Path};
@@ -72,7 +73,7 @@ pub fn resolve(
         "SERVICE_NOT_FOUND",
         format!(
             "No service is registered for {} or its parents",
-            cwd.display()
+            readable_path(&cwd).display()
         ),
     )
 }

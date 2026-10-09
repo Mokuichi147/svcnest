@@ -4,7 +4,7 @@ use crate::{
     error::fail,
     ipc::{self, Action, Command, RuntimeStatus, ServiceState, Snapshot, Target},
     logging,
-    paths::{Lock, Paths, atomic_write},
+    paths::{Lock, Paths, atomic_write, readable_path},
     platform,
     process::{self, ProcessTree},
     resolve,
@@ -270,18 +270,27 @@ pub async fn execute(cli: Cli) -> Result<i32> {
         CliCommand::Config { command } => match command {
             ConfigCommand::Show { name, show_secrets } => {
                 let config = single_config(&paths, name, "config show")?;
-                print!(
-                    "{}",
-                    toml::to_string_pretty(&if show_secrets {
-                        config
-                    } else {
-                        config.redacted()
-                    })?
-                );
+                let mut config = if show_secrets {
+                    config
+                } else {
+                    config.redacted()
+                };
+                config.cwd = readable_path(&config.cwd).into_owned();
+                config.resolved_executable =
+                    readable_path(&config.resolved_executable).into_owned();
+                config.resolved_script = config
+                    .resolved_script
+                    .as_deref()
+                    .map(|path| readable_path(path).into_owned());
+                config.env_file = config
+                    .env_file
+                    .as_deref()
+                    .map(|path| readable_path(path).into_owned());
+                print!("{}", toml::to_string_pretty(&config)?);
             }
             ConfigCommand::Path { name } => {
                 let config = single_config(&paths, name, "config path")?;
-                println!("{}", paths.config(&config.name).display());
+                println!("{}", readable_path(&paths.config(&config.name)).display());
             }
         },
         CliCommand::Remove(args) => {
@@ -488,7 +497,7 @@ fn print_snapshot(snapshot: &Snapshot, json: bool, table: bool) -> Result<()> {
                     .pid
                     .map_or("-".to_owned(), |pid| pid.to_string()),
                 if status.enabled { "yes" } else { "no" },
-                status.cwd.display()
+                readable_path(&status.cwd).display()
             );
         }
     } else {
@@ -506,8 +515,8 @@ fn print_snapshot(snapshot: &Snapshot, json: bool, table: bool) -> Result<()> {
                 status.runtime.state,
                 status.runtime.pid.map_or("-".into(), |pid| pid.to_string()),
                 display_command(&status.command),
-                status.resolved_executable.display(),
-                status.cwd.display(),
+                readable_path(&status.resolved_executable).display(),
+                readable_path(&status.cwd).display(),
                 if status.enabled { "yes" } else { "no" },
                 status.restart,
                 uptime,
@@ -664,7 +673,7 @@ async fn daemon_command(paths: Paths, command: DaemonCommand) -> Result<i32> {
                     if running { "running" } else { "stopped" },
                     if registered { "yes" } else { "no" },
                     platform::kind(),
-                    paths.home.display()
+                    readable_path(&paths.home).display()
                 );
             }
         }
@@ -694,7 +703,9 @@ async fn doctor(paths: &Paths, json: bool) -> Result<i32> {
     push(
         "daemon-registration",
         if registered { "ok" } else { "warning" },
-        platform::registration_path(paths)?.display().to_string(),
+        readable_path(&platform::registration_path(paths)?)
+            .display()
+            .to_string(),
         None,
     );
     let running = ipc::ping(paths).await;
@@ -735,7 +746,7 @@ async fn doctor(paths: &Paths, json: bool) -> Result<i32> {
             } else {
                 "error"
             },
-            dir.display().to_string(),
+            readable_path(dir).display().to_string(),
             None,
         );
     }
@@ -745,13 +756,13 @@ async fn doctor(paths: &Paths, json: bool) -> Result<i32> {
                 push(
                     "config",
                     "ok",
-                    path.display().to_string(),
+                    readable_path(&path).display().to_string(),
                     Some(config.name.clone()),
                 );
                 push(
                     "working-directory",
                     if config.cwd.is_dir() { "ok" } else { "error" },
-                    config.cwd.display().to_string(),
+                    readable_path(&config.cwd).display().to_string(),
                     Some(config.name.clone()),
                 );
                 push(
@@ -761,14 +772,16 @@ async fn doctor(paths: &Paths, json: bool) -> Result<i32> {
                     } else {
                         "error"
                     },
-                    config.resolved_executable.display().to_string(),
+                    readable_path(&config.resolved_executable)
+                        .display()
+                        .to_string(),
                     Some(config.name.clone()),
                 );
                 if let Some(script) = &config.resolved_script {
                     push(
                         "entrypoint",
                         if script.is_file() { "ok" } else { "error" },
-                        script.display().to_string(),
+                        readable_path(script).display().to_string(),
                         Some(config.name.clone()),
                     );
                 }
@@ -780,7 +793,7 @@ async fn doctor(paths: &Paths, json: bool) -> Result<i32> {
                         } else {
                             "error"
                         },
-                        path.display().to_string(),
+                        readable_path(path).display().to_string(),
                         Some(config.name),
                     );
                 }
