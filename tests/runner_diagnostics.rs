@@ -2,6 +2,7 @@ use std::{fs, process::Stdio, time::Duration};
 use svcnest::{
     config::{self, RestartPolicy, ServiceConfig},
     ipc::{self, RuntimeStatus, ServiceState},
+    logging::{LOG_GENERATIONS, MAX_LOG_BYTES, generation},
     paths::Paths,
     runner::Control,
 };
@@ -99,6 +100,48 @@ impl RunnerSandbox {
 
     fn logs(&self) -> String {
         fs::read_to_string(self.paths.log("api")).unwrap()
+    }
+
+    fn silent_config(&self, restart: RestartPolicy) -> ServiceConfig {
+        let mut config = self.config(37, restart);
+        let gate = self.temp.path().join("finish");
+        #[cfg(windows)]
+        {
+            let batch = self.temp.path().join("silent.cmd");
+            fs::write(
+                &batch,
+                format!(
+                    "@echo off\r\n:wait\r\nif exist \"{}\" exit /b 37\r\n\"%SystemRoot%\\System32\\ping.exe\" -n 2 127.0.0.1 >nul\r\ngoto wait\r\n",
+                    gate.display()
+                ),
+            )
+            .unwrap();
+            config.command = vec![batch.to_string_lossy().into_owned()];
+            config.resolved_executable = fs::canonicalize(batch).unwrap();
+        }
+        #[cfg(unix)]
+        {
+            config.resolved_executable = fs::canonicalize("/bin/sh").unwrap();
+            config.command = vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "while [ ! -e \"$SVCNEST_DIAGNOSTIC_GATE\" ]; do sleep 0.05; done; exit 37".into(),
+            ];
+            config.environment.insert(
+                "SVCNEST_DIAGNOSTIC_GATE".into(),
+                gate.to_string_lossy().into_owned(),
+            );
+        }
+        config
+    }
+
+    fn block_log_rotation(&self, headroom: u64) {
+        fs::File::create(self.paths.log("api"))
+            .unwrap()
+            .set_len(MAX_LOG_BYTES - headroom)
+            .unwrap();
+        // 通常のファイル削除で除去できないディレクトリを置き、確実にローテーションを失敗させる。
+        fs::create_dir(generation(&self.paths.log("api"), LOG_GENERATIONS - 1)).unwrap();
     }
 
     async fn inspect(&self, args: &[&str]) -> String {
@@ -263,6 +306,107 @@ async fn backoff_cancellation_saves_stopped_state_and_the_actual_cause() {
             assert_eq!(status.restarts, 0);
             assert!(sandbox.logs().contains(&format!("stopped: cause={cause}")));
             assert_eq!(sandbox.logs().matches("Started: pid=").count(), 1);
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn diagnostic_log_failure_at_startup_stops_the_target_and_notifies_failure() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let sandbox = RunnerSandbox::new();
+        sandbox.block_log_rotation(0);
+        let mut runner = sandbox.runner(&sandbox.silent_config(RestartPolicy::OnFailure));
+        let _control = runner.stdin.take().unwrap();
+        let mut reader = BufReader::new(runner.stdout.take().unwrap());
+        let mut states = Vec::new();
+        while let Some(status) = ipc::read_frame::<RuntimeStatus>(&mut reader).await.unwrap() {
+            states.push(status);
+        }
+        assert!(runner.wait().await.unwrap().success());
+        assert!(
+            states
+                .iter()
+                .any(|status| status.state == ServiceState::Stopping)
+        );
+        let final_status = states.last().unwrap();
+        assert_eq!(final_status.state, ServiceState::Failed);
+        assert_eq!(final_status.reason.as_deref(), Some("log-error"));
+        assert!(final_status.last_exit_code.is_some() || final_status.last_exit_signal.is_some());
+        assert_eq!(final_status.pid, None);
+        assert_eq!(final_status.restarts, 0);
+        let stored: RuntimeStatus =
+            serde_json::from_slice(&fs::read(sandbox.paths.status("api")).unwrap()).unwrap();
+        assert_eq!(stored.reason, final_status.reason);
+        assert_eq!(stored.last_exit_code, final_status.last_exit_code);
+        assert_eq!(stored.last_exit_signal, final_status.last_exit_signal);
+        assert!(
+            svcnest::paths::Lock::try_acquire(&sandbox.paths.service_lock("api"))
+                .unwrap()
+                .is_some()
+        );
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn diagnostic_log_failures_after_exit_preserve_the_targets_code_and_notify_failure() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        // 起動行だけ、終了行まで、再起動予約行までが収まる容量を残す。
+        // stdout/stderr が空なので、失敗するのは診断ログの書き込みだけになる。
+        for (headroom, restart, cancel_backoff) in [
+            (128, RestartPolicy::OnFailure, false),
+            (200, RestartPolicy::Never, false),
+            (200, RestartPolicy::OnFailure, false),
+            (300, RestartPolicy::OnFailure, true),
+        ] {
+            let sandbox = RunnerSandbox::new();
+            sandbox.block_log_rotation(headroom);
+            let mut runner = sandbox.runner(&sandbox.silent_config(restart));
+            let mut control = runner.stdin.take().unwrap();
+            let mut reader = BufReader::new(runner.stdout.take().unwrap());
+            let mut final_status = None;
+            let mut backoff_seen = false;
+            while let Some(status) = ipc::read_frame::<RuntimeStatus>(&mut reader).await.unwrap() {
+                if status.state == ServiceState::Running {
+                    fs::write(sandbox.temp.path().join("finish"), b"finish").unwrap();
+                }
+                if status.state == ServiceState::Backoff {
+                    assert!(cancel_backoff, "Unexpected restart: headroom={headroom}");
+                    backoff_seen = true;
+                    ipc::write_frame(&mut control, &Control::Stop)
+                        .await
+                        .unwrap();
+                }
+                final_status = Some(status);
+            }
+            assert!(
+                runner.wait().await.unwrap().success(),
+                "headroom={headroom}"
+            );
+            let final_status = final_status.unwrap();
+            assert_eq!(
+                final_status.state,
+                ServiceState::Failed,
+                "headroom={headroom}"
+            );
+            assert_eq!(final_status.reason.as_deref(), Some("log-error"));
+            assert_eq!(final_status.last_exit_code, Some(37));
+            assert_eq!(final_status.last_exit_signal, None);
+            assert_eq!(final_status.pid, None);
+            assert_eq!(final_status.restarts, 0);
+            assert_eq!(backoff_seen, cancel_backoff);
+            let logs = sandbox.logs();
+            assert!(logs.contains("Started: pid="));
+            assert_eq!(logs.contains("Exited: code=37"), headroom >= 200);
+            assert_eq!(logs.contains("Restart scheduled:"), cancel_backoff);
+            let stored: RuntimeStatus =
+                serde_json::from_slice(&fs::read(sandbox.paths.status("api")).unwrap()).unwrap();
+            assert_eq!(stored.state, ServiceState::Failed);
+            assert_eq!(stored.reason, final_status.reason);
+            assert_eq!(stored.last_exit_code, Some(37));
         }
     })
     .await
