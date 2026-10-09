@@ -32,8 +32,12 @@ pub async fn serve(paths: &Paths, name: &str) -> Result<()> {
     // EOF、壊れた制御フレーム、Stop はいずれも安全な停止として扱う。
     tokio::spawn(async move {
         let mut reader = BufReader::new(tokio::io::stdin());
-        let _ = ipc::read_frame::<Control>(&mut reader).await;
-        let _ = stop_tx.send(()).await;
+        let cause = match ipc::read_frame::<Control>(&mut reader).await {
+            Ok(Some(Control::Stop)) => "stop-requested",
+            Ok(None) => "control-input-closed",
+            Err(_) => "control-input-error",
+        };
+        let _ = stop_tx.send(cause).await;
     });
     let mut output = tokio::io::stdout();
     let mut status = RuntimeStatus {
@@ -98,16 +102,33 @@ pub async fn serve(paths: &Paths, name: &str) -> Result<()> {
         status.pid = tree.child.id();
         status.started_at = Some(Utc::now());
         status.reason = None;
+        record_event(
+            &log,
+            format!(
+                "Started: pid={} restart={}",
+                status.pid.context("Running target has no PID")?,
+                config.restart
+            ),
+        )?;
         // 出力先が切れた場合も target を停止してから runner を終了する。
         let mut manual = emit(paths, name, &status, &mut output).await.is_err();
+        let mut stop_cause = "control-output-closed";
         let mut scan = tokio::time::interval(Duration::from_millis(150));
         let exit = if manual {
             None
         } else {
             loop {
                 tokio::select! {
-                    _ = stop_rx.recv() => { manual = true; break None; }
-                    _ = &mut interrupt => { manual = true; break None; }
+                    cause = stop_rx.recv() => {
+                        manual = true;
+                        stop_cause = cause.unwrap_or("control-input-closed");
+                        break None;
+                    }
+                    _ = &mut interrupt => {
+                        manual = true;
+                        stop_cause = "interrupted";
+                        break None;
+                    }
                     result = tree.child.wait() => break Some(result?),
                     result = &mut stdout_task, if stdout_done.is_none() => {
                         let result = result.map_err(anyhow::Error::from).and_then(|result| result);
@@ -160,6 +181,15 @@ pub async fn serve(paths: &Paths, name: &str) -> Result<()> {
             let _ = emit(paths, name, &status, &mut output).await;
             return Ok(());
         }
+        record_event(
+            &log,
+            format!(
+                "Exited: code={} signal={} uptime={:.3}s",
+                code.map_or_else(|| "-".to_owned(), |code| code.to_string()),
+                signal.map_or_else(|| "-".to_owned(), |signal| signal.to_string()),
+                uptime.as_secs_f64()
+            ),
+        )?;
         if manual || !policy::should_restart(config.restart, exit.success(), false) {
             status.state = if !manual && !exit.success() {
                 ServiceState::Failed
@@ -173,32 +203,64 @@ pub async fn serve(paths: &Paths, name: &str) -> Result<()> {
             } else {
                 None
             };
+            record_event(
+                &log,
+                format!(
+                    "{}: cause={} restart={}",
+                    status.state,
+                    if manual {
+                        stop_cause
+                    } else if exit.success() {
+                        "exit-success"
+                    } else {
+                        "exit-failure"
+                    },
+                    config.restart
+                ),
+            )?;
             let _ = emit(paths, name, &status, &mut output).await;
             return Ok(());
         }
         let Some(delay) = backoff.next(Instant::now(), uptime) else {
             status.state = ServiceState::Failed;
             status.reason = Some("restart-limit".to_owned());
+            record_event(&log, "failed: cause=restart-limit".to_owned())?;
             let _ = emit(paths, name, &status, &mut output).await;
             return Ok(());
         };
         status.state = ServiceState::Backoff;
         status.reason = Some("restart-backoff".to_owned());
+        record_event(
+            &log,
+            format!(
+                "Restart scheduled: delay={}s restart={}",
+                delay.as_secs(),
+                config.restart
+            ),
+        )?;
         if emit(paths, name, &status, &mut output).await.is_err() {
             return Ok(());
         }
-        tokio::select! {
-            _ = stop_rx.recv() => {
-                status.state = ServiceState::Stopped;
-                status.reason = None;
-                let _ = emit(paths, name, &status, &mut output).await;
-                return Ok(());
-            }
-            _ = &mut interrupt => return Ok(()),
-            _ = tokio::time::sleep(delay) => (),
-        }
-        status.restarts = status.restarts.saturating_add(1);
+        let cause = tokio::select! {
+            cause = stop_rx.recv() => cause.unwrap_or("control-input-closed"),
+            _ = &mut interrupt => "interrupted",
+            _ = tokio::time::sleep(delay) => {
+                status.restarts = status.restarts.saturating_add(1);
+                continue;
+            },
+        };
+        status.state = ServiceState::Stopped;
+        status.reason = None;
+        record_event(&log, format!("stopped: cause={cause}"))?;
+        let _ = emit(paths, name, &status, &mut output).await;
+        return Ok(());
     }
+}
+
+fn record_event(log: &logging::SharedLog, message: String) -> Result<()> {
+    log.lock()
+        .map_err(|_| anyhow::anyhow!("Log writer lock poisoned"))?
+        .record("svcnest", message.as_bytes())
 }
 
 async fn emit(
