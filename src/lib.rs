@@ -9,5 +9,5 @@ pub mod platform;
 pub mod process;
 pub mod resolve;
 pub mod runner;
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(unix, windows))]
 pub mod runtime;

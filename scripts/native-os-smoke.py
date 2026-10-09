@@ -66,6 +66,10 @@ def macos_executable(pid):
     return Path(os.fsdecode(buffer.value))
 
 
+def linux_executable(pid):
+    return Path(os.readlink(f"/proc/{pid}/exe")).resolve()
+
+
 class Integration:
     def __init__(self, home, definition):
         self.home = home
@@ -182,7 +186,7 @@ def main():
     binary = parser.parse_args().binary.resolve(strict=True)
     with tempfile.TemporaryDirectory(prefix="svcnest-native-") as temporary:
         root = Path(temporary)
-        if sys.platform == "darwin":
+        if sys.platform in ("darwin", "linux"):
             installed_binary = root / "installed svcnest"
             shutil.copy2(binary, installed_binary)
             binary = installed_binary
@@ -248,14 +252,19 @@ def main():
             assert new_daemon != managed_daemon
             integration.assert_managed(new_daemon)
             assert "OVERLAPPING_INSTANCE" not in cli("logs", "-n", "1000").stdout
-            if sys.platform == "darwin":
-                old_runtime = macos_executable(new_daemon)
+            if sys.platform in ("darwin", "linux"):
+                executable = macos_executable if sys.platform == "darwin" else linux_executable
+                old_runtime = executable(new_daemon)
                 old_bytes = old_runtime.read_bytes()
                 old_registration = integration.installed.read_bytes()
                 updated_binary = root / "updated svcnest"
                 shutil.copy2(binary, updated_binary)
-                # Mach-O の署名を維持し、同じバージョンの異なるビルドを再現する。
-                execute("/usr/bin/codesign", "--force", "--sign", "-", "--identifier", "svcnest.native-update.fixture", str(updated_binary))
+                if sys.platform == "darwin":
+                    # Mach-O の署名を維持し、同じバージョンの異なるビルドを再現する。
+                    execute("/usr/bin/codesign", "--force", "--sign", "-", "--identifier", "svcnest.native-update.fixture", str(updated_binary))
+                else:
+                    with updated_binary.open("ab") as output:
+                        output.write(b"svcnest native update fixture")
                 os.replace(updated_binary, binary)
                 assert binary.read_bytes() != old_bytes
                 cli("enable", "--now")
@@ -263,14 +272,16 @@ def main():
                 assert status()["pid"] == recovered["pid"]
                 assert int((integration.runtime / "daemon.pid").read_text()) == new_daemon
                 assert old_runtime.read_bytes() == old_bytes
-                assert integration.installed.read_bytes() == old_registration
+                if sys.platform == "darwin":
+                    assert integration.installed.read_bytes() == old_registration
+                else:
+                    assert integration.installed.read_bytes() != old_registration
                 integration.assert_managed(new_daemon)
-                # 同じ LaunchAgent の次回起動では、新しいコピーへ同じ PID で exec する。
                 integration.crash(new_daemon)
-                recovered = wait_for(lambda: (value := running()) and value["pid"] != recovered["pid"] and value)
+                recovered = wait_for(lambda: (value := running()) and value["pid"] != new_daemon and value)
                 observed_ready = wait_for(lambda: (count := ready_count()) > observed_ready and count)
                 updated_daemon = int((integration.runtime / "daemon.pid").read_text())
-                updated_runtime = macos_executable(updated_daemon)
+                updated_runtime = executable(updated_daemon)
                 assert updated_daemon != new_daemon
                 assert updated_runtime != old_runtime
                 assert updated_runtime.read_bytes() == binary.read_bytes()
@@ -290,8 +301,8 @@ def main():
             cli("remove", "--stop", "--purge")
             recovery_check = "native daemon restart after crash" if sys.platform == "win32" else "native daemon crash recovery"
             checks = ["uv registration", "child directory resolution", "enable --now", "stale OS registration repair", "native autostart", recovery_check, "restart", "foreground Ctrl+C"]
-            if sys.platform == "darwin":
-                checks += ["update preserves daemon and service PIDs", "enable and install preserve loaded LaunchAgent", "old LaunchAgent selects updated runtime"]
+            if sys.platform in ("darwin", "linux"):
+                checks += ["update preserves daemon and service PIDs", "enable and install preserve the loaded daemon", "OS registration selects the updated runtime"]
             print(json.dumps({"success": True, "platform": sys.platform, "checks": checks}, ensure_ascii=False))
         finally:
             if foreground is not None and foreground.poll() is None:

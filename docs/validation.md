@@ -7,7 +7,7 @@
 | macOS arm64 / Rust 1.98 stable | 常駐中更新の macOS 対応後、全 51 テスト成功、fmt / Clippy 成功、release ビルド成功 |
 | macOS x86_64 | 全ターゲットの Clippy / 型チェック成功。実行は未検証 |
 | Windows x64 / Rust 1.98 stable | 空の端末画面の修正後、全 45 テスト成功、fmt / Clippy 成功、release ビルド成功。Task Scheduler と foreground Ctrl+C は既存の実機検証も成功 |
-| Linux x86_64 | 全ターゲットの Clippy / 型チェック成功。実行は未検証 |
+| Linux x86_64 | unit 10・core 21・E2E 19 の全テスト成功、fmt / Clippy / release ビルド成功。systemd user の自動起動・常駐中更新・クラッシュ回復スモークも成功 |
 | Linux arm64 | CI マトリクスに追加。ローカル実行は未検証 |
 
 macOS では実際の LaunchAgent を使う `scripts/native-macos-smoke.py` も成功しています。確認した操作は次のとおりです。
@@ -47,4 +47,6 @@ macOS もビルド別コピーから常駐する方式に対応しました。ma
 
 Windows の release バイナリでも同じ実時間検証が成功しました。待機は約 1.13 / 2.13 / 4.14 / 8.13 / 16.14 秒、その後は約 30 秒で、10 回の再起動制限を確認しました。61 秒の安定稼働後の待機は約 1.11 秒に戻り、手動停止後に再起動しないことも確認しました。
 
-`scripts/native-os-smoke.py` は三つの OS のユーザー自動起動を対象に、専用の定義を一時登録し、uv の解決、子ディレクトリ、登録の修復、OS 管理からの起動、daemon のクラッシュ回復、重複防止、restart、foreground Ctrl+C を確認します。macOS と Windows の実行が成功しました。Windows では BOM 付き UTF-16LE の XML で Task Scheduler への登録・修復・起動を確認し、クラッシュ時の旧ツリー回収後に OS から再起動して enabled サービスの復旧を検証しました。foreground Ctrl+C の終了コードは 130 です。Task Scheduler の起動失敗の再試行設定を、実行中 daemon の強制終了からの自動復旧保証として扱わないことは [README.md](../README.md) に記載しています。
+`scripts/native-os-smoke.py` は三つの OS のユーザー自動起動を対象に、専用の定義を一時登録し、uv の解決、子ディレクトリ、登録の修復、OS 管理からの起動、daemon のクラッシュ回復、重複防止、restart、foreground Ctrl+C を確認します。macOS、Linux、Windows の実行が成功しました。Windows では BOM 付き UTF-16LE の XML で Task Scheduler への登録・修復・起動を確認し、クラッシュ時の旧ツリー回収後に OS から再起動して enabled サービスの復旧を検証しました。foreground Ctrl+C の終了コードは 130 です。Task Scheduler の起動失敗の再試行設定を、実行中 daemon の強制終了からの自動復旧保証として扱わないことは [README.md](../README.md) に記載しています。
+
+Linux x86_64 では、内容ハッシュ別の runtime copy、systemd user unit からの起動、更新中の daemon・サービス PID 維持、更新後の `enable` / `daemon install`、停止後の新版選択、OS登録からの新版選択、クラッシュ回復を実プロセスで確認しました。systemd が監視する起動役と daemon の PID は一致し、実行中のコピーは上書きされません。

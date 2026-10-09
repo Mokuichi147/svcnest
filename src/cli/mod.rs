@@ -190,6 +190,8 @@ pub enum DaemonCommand {
     Serve {
         #[arg(long, hide = true)]
         source_executable: Option<PathBuf>,
+        #[arg(long, hide = true)]
+        prepared_runtime: bool,
     },
 }
 
@@ -614,13 +616,17 @@ async fn foreground(paths: &Paths, name: Option<String>) -> Result<i32> {
 
 async fn daemon_command(paths: Paths, command: DaemonCommand) -> Result<i32> {
     match command {
-        DaemonCommand::Serve { source_executable } => {
-            #[cfg(any(windows, target_os = "macos"))]
+        DaemonCommand::Serve {
+            source_executable,
+            prepared_runtime,
+        } => {
+            #[cfg(any(unix, windows))]
             {
                 if let Some(source) = source_executable {
                     return crate::runtime::serve_registered(&paths, &source).await;
                 }
-                if !crate::runtime::is_current_executable(&paths)? {
+                // ensure / OS 起動役から渡されたコピーは、起動前に prepare 済み。
+                if !prepared_runtime && !crate::runtime::is_current_executable(&paths)? {
                     // 直接 serve を指定してもインストール先の実行ファイルを常駐させない。
                     // 別の保存先の daemon が稼働中なら、従来どおり何もせず終了する。
                     let Some(lock) = Lock::try_acquire(&paths.daemon_lock())? else {
@@ -631,11 +637,11 @@ async fn daemon_command(paths: Paths, command: DaemonCommand) -> Result<i32> {
                     return Ok(0);
                 }
             }
-            #[cfg(not(any(windows, target_os = "macos")))]
-            if source_executable.is_some() {
+            #[cfg(not(any(unix, windows)))]
+            if source_executable.is_some() || prepared_runtime {
                 return fail(
                     "UNSUPPORTED_OPTION",
-                    "--source-executable is only used on Windows and macOS",
+                    "--source-executable is only used on supported platforms",
                 );
             }
             daemon::serve(paths).await?;

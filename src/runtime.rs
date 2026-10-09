@@ -1,7 +1,7 @@
 use crate::paths::{Paths, private_dir};
 use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 #[cfg(windows)]
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
@@ -59,9 +59,9 @@ fn matches(path: &Path, bytes: &[u8]) -> Result<bool> {
         "Runtime executable must be a regular file: {}",
         path.display()
     );
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     ensure!(
-        metadata.permissions().mode() & 0o100 != 0,
+        metadata.permissions().mode() & 0o111 != 0,
         "Runtime executable is not executable: {}",
         path.display()
     );
@@ -84,7 +84,7 @@ pub fn prepare(paths: &Paths, source: &Path) -> Result<PathBuf> {
     }
     let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
     temporary.write_all(&bytes)?;
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     temporary
         .as_file()
         .set_permissions(fs::Permissions::from_mode(0o700))?;
@@ -95,8 +95,8 @@ pub fn prepare(paths: &Paths, source: &Path) -> Result<PathBuf> {
             return Err(error.error).context("Cannot publish runtime executable");
         }
     }
-    #[cfg(target_os = "macos")]
-    std::fs::File::open(directory)?.sync_all()?;
+    #[cfg(unix)]
+    fs::File::open(directory)?.sync_all()?;
     Ok(path)
 }
 
@@ -107,14 +107,14 @@ pub fn is_current_executable(paths: &Paths) -> Result<bool> {
 
 pub async fn serve_registered(paths: &Paths, source: &Path) -> Result<i32> {
     let executable = prepare(paths, source)?;
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        // exec で PID を維持し、launchd が実際の daemon を監視できるようにする。
+        // exec で PID を維持し、OS のサービスマネージャーが実際の daemon を監視できるようにする。
         let error = std::process::Command::new(executable)
             .arg("--home")
             .arg(&paths.home)
-            .args(["daemon", "serve"])
+            .args(["daemon", "serve", "--prepared-runtime"])
             .current_dir(&paths.home)
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
@@ -129,7 +129,7 @@ pub async fn serve_registered(paths: &Paths, source: &Path) -> Result<i32> {
         let status = tokio::process::Command::new(executable)
             .arg("--home")
             .arg(&paths.home)
-            .args(["daemon", "serve"])
+            .args(["daemon", "serve", "--prepared-runtime"])
             .current_dir(&paths.home)
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
@@ -151,7 +151,7 @@ mod tests {
     fn builds_are_immutable_and_identified_by_contents() {
         let temp = tempfile::tempdir().unwrap();
         let paths = Paths::discover(Some(temp.path().join("state"))).unwrap();
-        let source = temp.path().join("installed.exe");
+        let source = temp.path().join("installed");
         fs::write(&source, b"first build, same package version").unwrap();
         let first = prepare(&paths, &source).unwrap();
         assert_eq!(prepare(&paths, &source).unwrap(), first);
@@ -172,7 +172,7 @@ mod tests {
     fn simultaneous_publishers_reuse_the_same_complete_build() {
         let temp = tempfile::tempdir().unwrap();
         let paths = Paths::discover(Some(temp.path().join("state"))).unwrap();
-        let source = temp.path().join("installed.exe");
+        let source = temp.path().join("installed");
         let bytes = vec![17; 1024 * 1024];
         fs::write(&source, &bytes).unwrap();
         let copies = std::thread::scope(|scope| {
@@ -192,7 +192,7 @@ mod tests {
     fn damaged_builds_are_rejected_without_overwriting_them() {
         let temp = tempfile::tempdir().unwrap();
         let paths = Paths::discover(Some(temp.path().join("state"))).unwrap();
-        let source = temp.path().join("installed.exe");
+        let source = temp.path().join("installed");
         fs::write(&source, b"expected build").unwrap();
         let cached = prepare(&paths, &source).unwrap();
         fs::write(&cached, b"damaged build").unwrap();
@@ -200,7 +200,7 @@ mod tests {
         assert_eq!(fs::read(cached).unwrap(), b"damaged build");
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     #[test]
     fn copies_are_executable_and_symlinks_are_rejected() {
         use std::os::unix::fs::symlink;

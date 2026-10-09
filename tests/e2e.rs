@@ -462,10 +462,10 @@ fn windows_background_tree_has_no_console_window_and_stops_gracefully() {
     }
 }
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 struct RuntimeChildGuard(std::process::Child);
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 impl Drop for RuntimeChildGuard {
     fn drop(&mut self) {
         let _ = self.0.kill();
@@ -596,6 +596,11 @@ fn process_executable(pid: u32) -> PathBuf {
     .unwrap()
 }
 
+#[cfg(target_os = "linux")]
+fn process_executable(pid: u32) -> PathBuf {
+    fs::canonicalize(format!("/proc/{pid}/exe")).unwrap()
+}
+
 #[cfg(target_os = "macos")]
 fn process_executable(pid: u32) -> PathBuf {
     use std::{ffi::CStr, os::unix::ffi::OsStrExt};
@@ -607,7 +612,7 @@ fn process_executable(pid: u32) -> PathBuf {
     fs::canonicalize(Path::new(std::ffi::OsStr::from_bytes(path.to_bytes()))).unwrap()
 }
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 #[test]
 fn runtime_cli_can_be_replaced_while_daemon_and_services_keep_running() {
     #[cfg(windows)]
@@ -638,7 +643,19 @@ fn runtime_cli_can_be_replaced_while_daemon_and_services_keep_running() {
         fs::rename(&sandbox.cli, sandbox.temp.path().join("previous.exe")).unwrap();
         fs::write(&sandbox.cli, &updated_bytes).unwrap();
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(target_os = "linux")]
+    {
+        let updated = sandbox.temp.path().join("updated svcnest");
+        fs::copy(&sandbox.cli, &updated).unwrap();
+        OpenOptions::new()
+            .append(true)
+            .open(&updated)
+            .unwrap()
+            .write_all(b"svcnest update fixture")
+            .unwrap();
+        fs::rename(updated, &sandbox.cli).unwrap();
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         // 署名を有効に保ちつつ内容の異なる Mach-O を作り、atomic rename で更新する。
         let next = sandbox.temp.path().join("updated svcnest");
