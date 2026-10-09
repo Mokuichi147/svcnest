@@ -39,6 +39,10 @@ Windows の対象は `CREATE_SUSPENDED` で作成し、`JOB_OBJECT_LIMIT_KILL_ON
 
 Windows の background runner は `CREATE_NO_WINDOW` で起動します。console を持たない daemon から起動しても空の端末画面を作らず、対象とその子孫は runner の画面なしの console を継承します。対象には `CREATE_NEW_PROCESS_GROUP` を指定して、共有 console 内で対象グループへ CTRL_BREAK を送ります。画面の有無から console の接続状態を推測して `AllocConsole` を呼ぶ処理は行いません。
 
+macOS、Linux、Windows の daemon は `runtime::prepare` が配置する `bin/<SHA-256>/svcnest`（Windows は `svcnest.exe`）から起動します。コピー元を一回読み取り、その同じ内容でハッシュ計算と配置を行います。ユーザー専用のディレクトリに一時ファイルを書き、同期後に既存ファイルを置き換えず公開します。Unix はコピーの権限を 0700 にし、公開後のディレクトリも同期します。同時起動では同じ完全なコピーを再利用し、ハッシュと内容が一致しない既存コピーは上書きせずエラーにします。runner は daemon と同じコピーを実行するため、インストール先の更新で稼働中のツリーに別ビルドが混ざりません。
+
+LaunchAgent、systemd user unit、Task Scheduler の実行先もコピー側です。登録したコピーは `daemon serve --source-executable <インストール先>` で起動し、インストール先の現在の内容をコピーします。macOS と Linux はそのビルドの daemon へ exec し、OS が監視する PID と daemon の PID を一致させます。Windows の起動役はそのビルドの daemon が終了するまで待ちます。OS 登録の起動役が古いビルドでも、次の起動では新版を選べます。コピー側から引数なしの `daemon serve` を実行した場合は、そのコピーで IPC を提供します。インストール先から直接 `daemon serve` を実行した場合はコピー側を background 起動して CLI を終了します。Windows の自動起動定義の移行は既存 XML と新しい定義を比較して行います。macOS は登録済みコピーを保持し、更新後の enable / install で bootout しません。OS が参照する起動役と稼働中のコピーを削除しないため、コピーの自動回収は行いません。
+
 親の自然終了時も子孫を停止してから再起動を判断します。手動停止と制御チャネル切断では再起動しません。再起動の間隔と回数制限は `runner::policy` にあり、実時間の待機を使わずにポリシーをテストできます。
 
 ## daemon の異常終了

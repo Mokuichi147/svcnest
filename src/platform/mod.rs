@@ -71,11 +71,11 @@ pub fn registered(paths: &Paths) -> Result<bool> {
 pub fn render(paths: &Paths, executable: &Path) -> Result<String> {
     #[cfg(target_os = "macos")]
     {
-        Ok(macos::render(paths, executable))
+        macos::render(paths, executable)
     }
     #[cfg(target_os = "linux")]
     {
-        Ok(linux::render(paths, executable))
+        linux::render(paths, executable)
     }
     #[cfg(windows)]
     {
@@ -84,17 +84,40 @@ pub fn render(paths: &Paths, executable: &Path) -> Result<String> {
 }
 
 pub async fn install(paths: &Paths) -> Result<()> {
-    if registered(paths)? && registration_loaded(paths).await {
-        return Ok(());
-    }
+    let loaded = registered(paths)? && registration_loaded(paths).await;
+    #[cfg(any(unix, windows))]
+    let source = fs::canonicalize(std::env::current_exe()?)?;
+    #[cfg(any(unix, windows))]
+    let runtime = crate::runtime::prepare(paths, &source)?;
+    #[cfg(target_os = "macos")]
+    let definition = macos::render_runtime(paths, &runtime, &source);
+    #[cfg(target_os = "linux")]
+    let definition = linux::render_runtime(paths, &runtime, &source);
+    #[cfg(windows)]
+    let definition = windows::render_runtime(paths, &runtime, &source)?;
     let path = registration_path(paths)?;
     let previous = match fs::read(&path) {
         Ok(bytes) => Some(bytes),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(error.into()),
     };
+    if loaded {
+        #[cfg(target_os = "macos")]
+        if macos::registration_current(paths, &source, previous.as_deref().unwrap_or_default()) {
+            return Ok(());
+        }
+        #[cfg(target_os = "linux")]
+        if previous.as_deref() == Some(definition.as_bytes()) {
+            return Ok(());
+        }
+        #[cfg(windows)]
+        if previous.as_deref() == Some(windows::registration_bytes(&definition).as_slice()) {
+            return Ok(());
+        }
+        #[cfg(target_os = "macos")]
+        macos::uninstall(paths).await?;
+    }
     fs::create_dir_all(path.parent().context("Registration file has no parent")?)?;
-    let definition = render(paths, &fs::canonicalize(std::env::current_exe()?)?)?;
     #[cfg(windows)]
     let bytes = windows::registration_bytes(&definition);
     #[cfg(not(windows))]
@@ -118,6 +141,12 @@ pub async fn install(paths: &Paths) -> Result<()> {
         // 修復に失敗しても、以前のログイン時登録定義は失わない。
         if let Some(bytes) = previous {
             atomic_write(&path, &bytes)?;
+            #[cfg(target_os = "linux")]
+            let _ = checked_command("systemctl", &["--user".into(), "daemon-reload".into()]).await;
+            #[cfg(target_os = "macos")]
+            if loaded {
+                let _ = macos::install(paths, &path).await;
+            }
         } else {
             crate::logging::remove_if_exists(&path)?;
         }

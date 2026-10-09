@@ -488,12 +488,15 @@ pub async fn ensure(paths: &Paths) -> Result<()> {
         .create(true)
         .append(true)
         .open(paths.logs.join("daemon.log"))?;
-    let mut command = ProcessCommand::new(std::env::current_exe()?);
+    let executable = std::env::current_exe()?;
+    #[cfg(any(unix, windows))]
+    let executable = crate::runtime::prepare(paths, &executable)?;
+    let mut command = ProcessCommand::new(executable);
     command
         .arg("--home")
         .arg(&paths.home)
-        .arg("daemon")
-        .arg("serve")
+        // 親で公開済みの内容ハッシュを確認しているため、子側の再ハッシュを省く。
+        .args(["daemon", "serve", "--prepared-runtime"])
         .current_dir(&paths.home)
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)

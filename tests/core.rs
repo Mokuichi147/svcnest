@@ -673,6 +673,8 @@ fn os_registration_contains_only_the_daemon_and_escapes_paths() {
     let temp = tempfile::tempdir().unwrap();
     let paths = TestPaths::discover(Some(temp.path().join("home with & spaces"))).unwrap();
     let executable = temp.path().join("svcnest with spaces");
+    #[cfg(any(unix, windows))]
+    fs::write(&executable, b"registration source").unwrap();
     let text = platform::render(&paths, &executable).unwrap();
     assert!(text.contains("daemon"));
     assert!(text.contains("serve"));
@@ -681,11 +683,24 @@ fn os_registration_contains_only_the_daemon_and_escapes_paths() {
     {
         assert!(text.contains("<array>"));
         assert!(text.contains("home with &amp; spaces"));
+        let runtime = svcnest::runtime::executable_path(&paths, &executable).unwrap();
+        assert!(text.contains(&format!(
+            "<string>{}</string>",
+            platform::xml_escape(&runtime.to_string_lossy())
+        )));
+        assert!(text.contains("<string>--source-executable</string>"));
+        assert!(!runtime.exists());
     }
     #[cfg(target_os = "linux")]
     {
         assert!(text.contains("ExecStart=\""));
         assert!(text.contains("WantedBy=default.target"));
+        let runtime = svcnest::runtime::executable_path(&paths, &executable).unwrap();
+        assert!(text.contains(&format!(
+            "{} --home",
+            svcnest::platform::linux::quote(&runtime.to_string_lossy())
+        )));
+        assert!(text.contains("--source-executable"));
         assert_eq!(
             svcnest::platform::linux::quote("%$\"\\"),
             "\"%%$$\\\"\\\\\""
@@ -696,6 +711,13 @@ fn os_registration_contains_only_the_daemon_and_escapes_paths() {
         assert!(text.contains("<LogonType>InteractiveToken</LogonType>"));
         assert!(text.contains("<RunLevel>LeastPrivilege</RunLevel>"));
         assert!(!text.contains("HighestAvailable"));
+        let runtime = svcnest::runtime::executable_path(&paths, &executable).unwrap();
+        assert!(text.contains(&format!(
+            "<Command>{}</Command>",
+            platform::xml_escape(&runtime.to_string_lossy())
+        )));
+        assert!(text.contains("--source-executable"));
+        assert!(!runtime.exists());
         assert_eq!(
             svcnest::platform::windows::quote_arg("a\\\"b\\"),
             "\"a\\\\\\\"b\\\\\""

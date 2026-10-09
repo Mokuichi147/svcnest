@@ -123,6 +123,22 @@ svcnest add api \
 
 Unix の IPC は所有者専用のディレクトリ内にある Unix Domain Socket、Windows は現在のユーザーだけを許可する DACL を持つ Named Pipe です。ネットワークポートは開きません。daemon のロックとサービスごとのロックにより二重起動を防ぎます。daemon との制御パイプが閉じると runner は対象ツリーを停止し、停止完了までサービスのロックを保持します。
 
+### macOS / Linux / Windows での常駐中の更新
+
+macOS、Linux、Windows の daemon と runner は、保存先の `bin/<SHA-256>/svcnest`（Windows は `svcnest.exe`）に配置したコピーから動きます。ハッシュは実行ファイルの内容から計算するため、同じバージョン番号で再ビルドしても別のコピーになります。常駐中のコピーを上書きせず、通常どおり `cargo install --path . --locked` でインストール先を更新できます。Unix のコピーは実行権限を持ちます。
+
+更新中も既存 daemon とサービスは同じ PID で動き続けます。新しい daemon は次回起動時に使います。LaunchAgent、systemd user unit、Task Scheduler はコピー側の起動役を実行し、その都度インストール先から現在のビルドを選ぶため、更新のたびに自動起動を登録し直す必要はありません。更新後の `enable` / `daemon install` も稼働中の daemon とサービスを維持します。実行中や OS 登録で参照中のコピーを残すため、古いコピーは自動削除しません。
+
+この方式を導入する前の daemon から移行する初回は、daemon を停止してから更新します。
+
+```sh
+svcnest daemon stop
+cargo install --path . --locked
+svcnest daemon install
+```
+
+`daemon install` は自動起動を登録して daemon を開始します。稼働中 daemon への変更の即時適用には daemon の再起動が必要です。Windows ではインストール先の CLI で `run` や `logs -f` を実行中の場合、その長時間の CLI コマンドも更新先の exe を使用するため、更新前に終了してください。
+
 `status --json` と `list --json` は同じ v1 スキーマを使用します。定義は [schema/status-v1.json](schema/status-v1.json)、設計は [docs/architecture.md](docs/architecture.md) を参照してください。
 
 ## 開発と検証

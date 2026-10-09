@@ -80,6 +80,9 @@ jobs:
         run: |
           target/release/svcnest daemon install --dry-run > "$RUNNER_TEMP/svcnest.plist"
           plutil -lint "$RUNNER_TEMP/svcnest.plist"
+      - name: Install update without stopping services
+        if: runner.os == 'macOS'
+        run: python scripts/macos-install-update-smoke.py
       - name: Validate Task Scheduler XML
         if: runner.os == 'Windows'
         shell: pwsh
