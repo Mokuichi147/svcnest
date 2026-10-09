@@ -1,4 +1,4 @@
-use crate::error::fail;
+use crate::{error::fail, paths::readable_path};
 use anyhow::{Context, Result};
 use std::{
     ffi::OsStr,
@@ -11,8 +11,12 @@ pub fn working_directory(input: Option<&Path>) -> Result<PathBuf> {
         Some(path) => path.to_owned(),
         None => std::env::current_dir()?,
     };
-    let path = fs::canonicalize(&path)
-        .with_context(|| format!("Working directory does not exist: {}", path.display()))?;
+    let path = fs::canonicalize(&path).with_context(|| {
+        format!(
+            "Working directory does not exist: {}",
+            readable_path(&path).display()
+        )
+    })?;
     if !path.is_dir() {
         return fail("INVALID_CWD", "Working directory is not a directory");
     }

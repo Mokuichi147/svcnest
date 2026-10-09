@@ -1,4 +1,4 @@
-use crate::{config::ServiceConfig, error::fail};
+use crate::{config::ServiceConfig, error::fail, paths::readable_path};
 use anyhow::{Context, Result};
 use std::{
     process::{ExitStatus, Stdio},
@@ -80,9 +80,12 @@ impl ProcessTree {
                     },
             );
         }
-        let mut child = command
-            .spawn()
-            .with_context(|| format!("Cannot spawn {}", config.resolved_executable.display()))?;
+        let mut child = command.spawn().with_context(|| {
+            format!(
+                "Cannot spawn {}",
+                readable_path(&config.resolved_executable).display()
+            )
+        })?;
         let pid = child.id().context("Spawned process has no PID")?;
         #[cfg(unix)]
         let containment = unix::Group::new(pid)?;
