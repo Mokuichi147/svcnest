@@ -655,7 +655,7 @@ fn runtime_cli_can_be_replaced_while_daemon_and_services_keep_running() {
             .unwrap();
         fs::rename(updated, &sandbox.cli).unwrap();
     }
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     {
         // 署名を有効に保ちつつ内容の異なる Mach-O を作り、atomic rename で更新する。
         let next = sandbox.temp.path().join("updated svcnest");
