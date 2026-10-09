@@ -23,6 +23,7 @@ struct Sandbox {
     home: PathBuf,
     project: PathBuf,
     paths: Paths,
+    cli: PathBuf,
 }
 
 impl Sandbox {
@@ -40,10 +41,11 @@ impl Sandbox {
             home,
             project,
             paths,
+            cli: PathBuf::from(CLI),
         }
     }
     fn command(&self, cwd: &Path) -> Command {
-        let mut command = Command::new(CLI);
+        let mut command = Command::new(&self.cli);
         command.arg("--home").arg(&self.home).current_dir(cwd);
         command
     }
@@ -458,6 +460,177 @@ fn windows_background_tree_has_no_console_window_and_stops_gracefully() {
     for mode in ["console", "console-child"] {
         assert!(logs.contains(&format!("console-break-received: mode={mode}")));
     }
+}
+
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+struct RuntimeChildGuard(std::process::Child);
+
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+impl Drop for RuntimeChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[cfg(windows)]
+fn process_executable(pid: u32) -> PathBuf {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::{
+        Foundation::CloseHandle,
+        System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+        },
+    };
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    assert!(!handle.is_null());
+    let mut buffer = vec![0u16; 32768];
+    let mut length = buffer.len() as u32;
+    let result = unsafe { QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &mut length) };
+    unsafe { CloseHandle(handle) };
+    assert_ne!(result, 0);
+    fs::canonicalize(PathBuf::from(std::ffi::OsString::from_wide(
+        &buffer[..length as usize],
+    )))
+    .unwrap()
+}
+
+#[cfg(target_os = "linux")]
+fn process_executable(pid: u32) -> PathBuf {
+    fs::canonicalize(format!("/proc/{pid}/exe")).unwrap()
+}
+
+#[cfg(target_os = "macos")]
+fn process_executable(pid: u32) -> PathBuf {
+    use std::{ffi::CStr, os::unix::ffi::OsStrExt};
+    let mut buffer = vec![0u8; 4096];
+    let length =
+        unsafe { libc::proc_pidpath(pid as i32, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
+    assert!(length > 0);
+    let path = CStr::from_bytes_until_nul(&buffer).unwrap();
+    fs::canonicalize(Path::new(std::ffi::OsStr::from_bytes(path.to_bytes()))).unwrap()
+}
+
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+#[test]
+fn runtime_cli_can_be_replaced_while_daemon_and_services_keep_running() {
+    #[cfg(windows)]
+    use std::os::windows::process::CommandExt;
+
+    let mut sandbox = Sandbox::new();
+    sandbox.cli = sandbox.temp.path().join(if cfg!(windows) {
+        "installed svcnest.exe"
+    } else {
+        "installed svcnest"
+    });
+    fs::copy(CLI, &sandbox.cli).unwrap();
+    sandbox.add("api", "tree", "never", &sandbox.project);
+    sandbox.ok(&["start"]);
+    let pids = sandbox.wait_pids("api", 3);
+    let daemon_pid: u32 = fs::read_to_string(sandbox.paths.runtime.join("daemon.pid"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let original = svcnest::runtime::executable_path(&sandbox.paths, &sandbox.cli).unwrap();
+    assert_eq!(process_executable(daemon_pid), original);
+    let original_bytes = fs::read(&original).unwrap();
+    #[cfg(windows)]
+    {
+        let mut updated_bytes = original_bytes.clone();
+        updated_bytes.extend_from_slice(b"svcnest update fixture");
+        fs::rename(&sandbox.cli, sandbox.temp.path().join("previous.exe")).unwrap();
+        fs::write(&sandbox.cli, updated_bytes).unwrap();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let updated = sandbox.temp.path().join("updated svcnest");
+        fs::copy(&sandbox.cli, &updated).unwrap();
+        OpenOptions::new()
+            .append(true)
+            .open(&updated)
+            .unwrap()
+            .write_all(b"svcnest update fixture")
+            .unwrap();
+        fs::rename(updated, &sandbox.cli).unwrap();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let next = sandbox.temp.path().join("updated svcnest");
+        fs::copy(&sandbox.cli, &next).unwrap();
+        let mut signing = Command::new("/usr/bin/codesign");
+        signing
+            .args([
+                "--force",
+                "--sign",
+                "-",
+                "--identifier",
+                "svcnest.runtime-update.fixture",
+            ])
+            .arg(&next);
+        assert!(
+            status_with_timeout(&mut signing, Duration::from_secs(30))
+                .unwrap()
+                .success()
+        );
+        fs::rename(next, &sandbox.cli).unwrap();
+    }
+    sandbox.ok(&["start"]);
+    assert_eq!(sandbox.pid("api"), pids[0]);
+    assert_eq!(process_executable(daemon_pid), original);
+    assert!(pids.iter().all(|pid| is_alive(*pid)));
+    assert_eq!(fs::read(&original).unwrap(), original_bytes);
+    let updated = svcnest::runtime::executable_path(&sandbox.paths, &sandbox.cli).unwrap();
+    assert_ne!(updated, original);
+    sandbox.ok(&["daemon", "stop"]);
+    assert!(pids.iter().all(|pid| !is_alive(*pid)));
+    sandbox.ok(&["start"]);
+    let current_pid: u32 = fs::read_to_string(sandbox.paths.runtime.join("daemon.pid"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(process_executable(current_pid), updated);
+    sandbox.wait_pids("api", 6);
+    sandbox.ok(&["daemon", "stop"]);
+
+    let mut config = config::load_named(&sandbox.paths, "api").unwrap();
+    config.enabled = true;
+    config::save(&sandbox.paths, &config).unwrap();
+    let mut command = Command::new(&original);
+    command
+        .arg("--home")
+        .arg(&sandbox.home)
+        .args(["daemon", "serve", "--source-executable"])
+        .arg(&sandbox.cli)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    let mut bootstrap = RuntimeChildGuard(command.spawn().unwrap());
+    wait_for(|| (sandbox.state("api") == ServiceState::Running).then_some(()));
+    let registered_pid: u32 = fs::read_to_string(sandbox.paths.runtime.join("daemon.pid"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(process_executable(registered_pid), updated);
+    assert!(bootstrap.0.try_wait().unwrap().is_none());
+    #[cfg(windows)]
+    {
+        assert_eq!(process_executable(bootstrap.0.id()), original);
+        fs::write(&sandbox.cli, &original_bytes).unwrap();
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        assert_eq!(bootstrap.0.id(), registered_pid);
+        assert_eq!(process_executable(bootstrap.0.id()), updated);
+        let restored = sandbox.temp.path().join("restored svcnest");
+        fs::copy(&original, &restored).unwrap();
+        fs::rename(restored, &sandbox.cli).unwrap();
+    }
+    assert!(is_alive(registered_pid));
+    sandbox.wait_pids("api", 9);
+    sandbox.ok(&["daemon", "stop"]);
+    assert!(wait_for(|| bootstrap.0.try_wait().unwrap()).success());
 }
 
 #[test]

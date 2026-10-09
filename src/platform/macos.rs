@@ -3,19 +3,26 @@ use crate::{
     platform::{checked_command, label, xml_escape},
 };
 use anyhow::Result;
-use std::path::Path;
+use std::{fs, path::Path};
 
 fn domain() -> String {
     format!("gui/{}", unsafe { libc::geteuid() })
 }
 
-pub fn render(paths: &Paths, executable: &Path) -> String {
+pub fn render(paths: &Paths, executable: &Path) -> Result<String> {
+    let runtime = crate::runtime::executable_path(paths, executable)?;
+    Ok(render_runtime(paths, &runtime, executable))
+}
+
+pub(crate) fn render_runtime(paths: &Paths, runtime: &Path, source: &Path) -> String {
     let args = [
-        executable.to_string_lossy().into_owned(),
+        runtime.to_string_lossy().into_owned(),
         "--home".into(),
         paths.home.to_string_lossy().into_owned(),
         "daemon".into(),
         "serve".into(),
+        "--source-executable".into(),
+        source.to_string_lossy().into_owned(),
     ];
     let arguments = args
         .iter()
@@ -28,6 +35,35 @@ pub fn render(paths: &Paths, executable: &Path) -> String {
         label(paths),
         arguments
     )
+}
+
+pub(crate) fn registration_current(paths: &Paths, source: &Path, bytes: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    let Some((_, arguments)) = text.split_once("<key>ProgramArguments</key><array>\n    <string>")
+    else {
+        return false;
+    };
+    let Some((executable, _)) = arguments.split_once("</string>") else {
+        return false;
+    };
+    let prefix = format!("{}/", xml_escape(&paths.home.join("bin").to_string_lossy()));
+    let Some(digest) = executable
+        .strip_prefix(&prefix)
+        .and_then(|path| path.strip_suffix("/svcnest"))
+    else {
+        return false;
+    };
+    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return false;
+    }
+    let runtime = paths.home.join("bin").join(digest).join("svcnest");
+    // 登録済みの旧コピーを保持し、更新後の enable / install で bootout しない。
+    text == render_runtime(paths, &runtime, source)
+        && fs::symlink_metadata(&runtime)
+            .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+        && crate::runtime::executable_path(paths, &runtime).is_ok_and(|path| path == runtime)
 }
 
 pub async fn install(_paths: &Paths, path: &Path) -> Result<()> {
@@ -62,4 +98,38 @@ pub async fn status(paths: &Paths) -> Result<String> {
         ],
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registration_keeps_its_bootstrap_across_updates_but_detects_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths::discover(Some(temp.path().join("state with & spaces"))).unwrap();
+        let source = temp.path().join("installed with & spaces");
+        fs::write(&source, b"first build").unwrap();
+        let runtime = crate::runtime::prepare(&paths, &source).unwrap();
+        let definition = render_runtime(&paths, &runtime, &source);
+        assert!(registration_current(&paths, &source, definition.as_bytes()));
+        fs::write(&source, b"second build").unwrap();
+        assert!(registration_current(&paths, &source, definition.as_bytes()));
+        assert!(!registration_current(
+            &paths,
+            &temp.path().join("another install"),
+            definition.as_bytes()
+        ));
+        assert!(!registration_current(
+            &paths,
+            &source,
+            definition.replace("<true/>", "<false/>").as_bytes()
+        ));
+        fs::write(runtime, b"damaged bootstrap").unwrap();
+        assert!(!registration_current(
+            &paths,
+            &source,
+            definition.as_bytes()
+        ));
+    }
 }

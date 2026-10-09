@@ -187,7 +187,12 @@ pub enum DaemonCommand {
         json: bool,
     },
     #[command(about = "Serve local IPC (used by the OS service manager)")]
-    Serve,
+    Serve {
+        #[arg(long, hide = true)]
+        source_executable: Option<PathBuf>,
+        #[arg(long, hide = true)]
+        prepared_runtime: bool,
+    },
 }
 
 fn parse_env(value: &str) -> std::result::Result<(String, String), String> {
@@ -611,7 +616,36 @@ async fn foreground(paths: &Paths, name: Option<String>) -> Result<i32> {
 
 async fn daemon_command(paths: Paths, command: DaemonCommand) -> Result<i32> {
     match command {
-        DaemonCommand::Serve => daemon::serve(paths).await?,
+        DaemonCommand::Serve {
+            source_executable,
+            prepared_runtime,
+        } => {
+            #[cfg(any(unix, windows))]
+            {
+                if let Some(source) = source_executable {
+                    return crate::runtime::serve_registered(&paths, &source).await;
+                }
+                // ensure / OS 起動役から渡されたコピーは、起動前に prepare 済み。
+                if !prepared_runtime && !crate::runtime::is_current_executable(&paths)? {
+                    // 直接 serve を指定してもインストール先の実行ファイルを常駐させない。
+                    // 別の保存先の daemon が稼働中なら、従来どおり何もせず終了する。
+                    let Some(lock) = Lock::try_acquire(&paths.daemon_lock())? else {
+                        return Ok(0);
+                    };
+                    drop(lock);
+                    daemon::ensure(&paths).await?;
+                    return Ok(0);
+                }
+            }
+            #[cfg(not(any(unix, windows)))]
+            if source_executable.is_some() || prepared_runtime {
+                return fail(
+                    "UNSUPPORTED_OPTION",
+                    "--source-executable is only used on supported platforms",
+                );
+            }
+            daemon::serve(paths).await?;
+        }
         DaemonCommand::Install { dry_run } => {
             if dry_run {
                 print!("{}", platform::render(&paths, &std::env::current_exe()?)?);
