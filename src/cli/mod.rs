@@ -579,7 +579,11 @@ async fn foreground(paths: &Paths, name: Option<String>) -> Result<i32> {
             ),
         );
     };
-    // ロック取得直後に保存し、起動中の foreground を前の runner の停止中と誤認させない。
+    process::prepare_supervisor()?;
+    // foreground 状態を公開する前に登録し、その後の Ctrl+C を確実に受け取る。
+    let signal = process::interrupt();
+    tokio::pin!(signal);
+    // 起動前に保存し、起動中の foreground を前の runner の停止中と誤認させない。
     let status_path = paths.status(&selected.name);
     let previous = std::fs::read(&status_path).ok();
     let mut status = RuntimeStatus {
@@ -597,9 +601,6 @@ async fn foreground(paths: &Paths, name: Option<String>) -> Result<i32> {
         error
     };
     let config = config::load_named(paths, &selected.name).map_err(restore)?;
-    process::prepare_supervisor().map_err(restore)?;
-    let signal = process::interrupt();
-    tokio::pin!(signal);
     let mut tree = ProcessTree::spawn(&config, true).map_err(restore)?;
     status.pid = tree.child.id();
     atomic_write(&paths.status(&config.name), &serde_json::to_vec(&status)?)?;
