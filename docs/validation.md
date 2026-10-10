@@ -69,4 +69,6 @@ Windows の release バイナリでも同じ実時間検証が成功しました
 
 Linux x86_64 では、内容ハッシュ別の runtime copy、systemd user unit からの起動、更新中の daemon・サービス PID 維持、更新後の `enable` / `daemon install`、停止後の新版選択、OS登録からの新版選択、クラッシュ回復を実プロセスで確認しました。systemd が監視する起動役と daemon の PID は一致し、実行中のコピーは上書きされません。
 
-2026-10-10 の PR #4 の CI（5c845c9）では、Linux x86_64 の Ctrl+C E2E が `foreground` を期待した時点で一時的な `stopping` を読み、失敗しました。子・孫の PID 記録は CLI による状態保存より先に完了する場合があるため、テストで `foreground` 状態を最大 15 秒待つよう修正しました。Ctrl+C の終了コード 130、プロセスツリーの停止、ログ follow の停止後も background が稼働することの検証は維持しています。macOS arm64 の単体・共通・runner 診断の全 39 テストと fmt / Clippy が成功しました。手元のユーザー daemon が稼働中のため、修正した E2E と全 5 環境の検証は CI で確認します。
+2026-10-10 の PR #4 の CI（5c845c9）では、Linux x86_64 の Ctrl+C E2E が `foreground` を期待した時点で一時的な `stopping` を読み、失敗しました。`svcnest run` がサービスのロックを取得してから `foreground` を保存するまでの間、daemon はロック中の保存済み状態を前の runner の停止中として報告していました。テストで待機するのではなく、ロック取得直後に `foreground` を保存し、設定の読み込みや起動に失敗した場合は前回の状態へ戻すよう修正しました。E2E は従来どおり PID の記録直後に `foreground` を要求します。
+
+同日のレビューを受けて、インストーラーを次のように修正しました。既存 CLI がシンボリックリンクまたは書き込めない場所にある場合は更新せず、次の既存 CLI か標準の配置先へ導入して警告します。リンク経由の表記で PATH にある配置先は、実体のパスに解決した後も登録済みとして扱います。未対応のシェルでは配置を成功させ、PATH の手動設定を案内します。Windows では既存の exe を `File.Replace` で置き換えず、改名して退避してから配置し、実行中で削除できなかった旧 exe は次回の更新で削除します。macOS arm64 のインストーラー検証 50 項目、リリース処理 19 テスト、fmt / Clippy、単体・共通・runner 診断の全 39 テストが成功しました。Windows の検証には、配置先で node.exe を常駐させたままの更新、BOM を残した文字列の Invoke-Expression、リンクの既存 CLI を除外する処理を追加しました。手元に PowerShell がないため、これらと修正した E2E は CI で確認します。

@@ -579,17 +579,29 @@ async fn foreground(paths: &Paths, name: Option<String>) -> Result<i32> {
             ),
         );
     };
-    let config = config::load_named(paths, &selected.name)?;
-    process::prepare_supervisor()?;
-    let signal = process::interrupt();
-    tokio::pin!(signal);
-    let mut tree = ProcessTree::spawn(&config, true)?;
-    let status = RuntimeStatus {
+    // ロック取得直後に保存し、起動中の foreground を前の runner の停止中と誤認させない。
+    let status_path = paths.status(&selected.name);
+    let previous = std::fs::read(&status_path).ok();
+    let mut status = RuntimeStatus {
         state: ServiceState::Foreground,
-        pid: tree.child.id(),
         started_at: Some(Utc::now()),
         ..Default::default()
     };
+    atomic_write(&status_path, &serde_json::to_vec(&status)?)?;
+    // 起動前に失敗した場合は、前回の終了状態を残す。
+    let restore = |error: anyhow::Error| {
+        let _ = match &previous {
+            Some(bytes) => atomic_write(&status_path, bytes),
+            None => std::fs::remove_file(&status_path).map_err(Into::into),
+        };
+        error
+    };
+    let config = config::load_named(paths, &selected.name).map_err(restore)?;
+    process::prepare_supervisor().map_err(restore)?;
+    let signal = process::interrupt();
+    tokio::pin!(signal);
+    let mut tree = ProcessTree::spawn(&config, true).map_err(restore)?;
+    status.pid = tree.child.id();
     atomic_write(&paths.status(&config.name), &serde_json::to_vec(&status)?)?;
     let mut interval = tokio::time::interval(Duration::from_millis(150));
     let (exit, mut interrupted) = loop {

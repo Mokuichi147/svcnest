@@ -62,23 +62,66 @@ function Set-SvcnestUserPath([string]$Value) {
 }
 
 function Find-SvcnestExecutable {
-    $command = Get-Command svcnest.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($command) { return $command.Path }
+    $candidates = @(Get-Command svcnest.exe -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1 | ForEach-Object { $_.Path })
     $cargo = $env:CARGO_HOME
     if (-not $cargo) { $cargo = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.cargo' }
     $candidate = Join-Path $cargo 'bin\svcnest.exe'
-    if ([IO.File]::Exists($candidate)) { return $candidate }
-    return $null
+    if ([IO.File]::Exists($candidate) -and $candidates -notcontains $candidate) { $candidates += $candidate }
+    return $candidates
+}
+
+function Test-SvcnestUpdatableExecutable([string]$Path) {
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if (-not $item -or $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { return $false }
+    # Program Files などの書き込めない場所は、管理者権限なしでは更新できない。
+    $probe = Join-Path $item.DirectoryName ('.svcnest-write-test-' + [Guid]::NewGuid().ToString('N'))
+    try {
+        [IO.File]::WriteAllBytes($probe, [byte[]]@())
+        [IO.File]::Delete($probe)
+        return $true
+    } catch { return $false }
 }
 
 function Resolve-SvcnestInstallDirectory([string]$Requested) {
     if (-not $Requested) {
         # 自動起動が参照する既存 CLI の配置先を維持する。
-        $existing = Find-SvcnestExecutable
-        if ($existing) { $Requested = [IO.Path]::GetDirectoryName($existing) }
-        else { $Requested = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs\svcnest' }
+        foreach ($existing in @(Find-SvcnestExecutable)) {
+            if (Test-SvcnestUpdatableExecutable $existing) {
+                $Requested = [IO.Path]::GetDirectoryName($existing)
+                break
+            }
+            if (-not $script:SvcnestSkippedExecutable) { $script:SvcnestSkippedExecutable = $existing }
+        }
+        if (-not $Requested) {
+            $Requested = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs\svcnest'
+        }
     }
     return [IO.Path]::GetFullPath($Requested)
+}
+
+function Remove-SvcnestRetiredExecutable([string]$Directory) {
+    # 実行中だった旧 exe は削除できないため、次回の更新時に改めて削除する。
+    foreach ($retired in [IO.Directory]::GetFiles($Directory, '.svcnest-old-*.exe')) {
+        try { [IO.File]::Delete($retired) } catch { }
+    }
+}
+
+function Install-SvcnestExecutable([string]$Source, [string]$Destination) {
+    if (-not [IO.File]::Exists($Destination)) {
+        [IO.File]::Move($Source, $Destination)
+        return
+    }
+    # 実行中の exe は上書き・削除できないが改名はできるため、退避してから置き換える。
+    $retired = Join-Path ([IO.Path]::GetDirectoryName($Destination)) ('.svcnest-old-' + [Guid]::NewGuid().ToString('N') + '.exe')
+    [IO.File]::Move($Destination, $retired)
+    try {
+        [IO.File]::Move($Source, $Destination)
+    } catch {
+        [IO.File]::Move($retired, $Destination)
+        throw
+    }
+    Remove-SvcnestRetiredExecutable ([IO.Path]::GetDirectoryName($Destination))
 }
 
 function Add-SvcnestPath([string]$ExistingPath, [string]$Directory) {
@@ -160,6 +203,7 @@ function Install-Svcnest {
     )
     $ErrorActionPreference = 'Stop'
     $target = Get-SvcnestWindowsTarget
+    $script:SvcnestSkippedExecutable = $null
     $InstallDir = Resolve-SvcnestInstallDirectory $InstallDir
     if (-not $NoModifyPath -and $InstallDir -match '[;\r\n]') {
         throw 'PATH に追加できない配置先です。-NoModifyPath を指定できます。'
@@ -216,14 +260,13 @@ function Install-Svcnest {
         [IO.Directory]::CreateDirectory($staging) | Out-Null
         $stagedBinary = Join-Path $staging 'svcnest.exe'
         [IO.File]::Copy($binary, $stagedBinary)
-        if ([IO.File]::Exists($destination)) {
-            [IO.File]::Replace($stagedBinary, $destination, [NullString]::Value)
-        } else {
-            [IO.File]::Move($stagedBinary, $destination)
-        }
+        Install-SvcnestExecutable $stagedBinary $destination
         if (-not $NoModifyPath) { Update-SvcnestPath $InstallDir }
         Write-Host "インストール完了: $installedVersion"
         Write-Host "配置先: $destination"
+        if ($script:SvcnestSkippedExecutable) {
+            Write-Warning "シンボリックリンクまたは書き込めない場所にある既存の $($script:SvcnestSkippedExecutable) は更新していません。PATH の順序によっては既存のコマンドが優先されます。"
+        }
     } finally {
         if ($staging -and [IO.Directory]::Exists($staging)) { [IO.Directory]::Delete($staging, $true) }
         if ([IO.Directory]::Exists($temporary)) { [IO.Directory]::Delete($temporary, $true) }

@@ -284,6 +284,56 @@ shutil.copyfile(source, args[args.index("--output") + 1])
         install(test_env=migration_env)
         assert legacy.read_text().endswith('echo "svcnest 0.9.0"\n')
 
+        # パッケージ管理などのリンクは更新せず、次の既存 CLI か標準の配置先へ導入する。
+        migration_env.pop("SVCNEST_INSTALL_DIR")
+        linked = root / "linked bin/svcnest"
+        linked.parent.mkdir()
+        linked.symlink_to(legacy)
+        migration_env["PATH"] = str(linked.parent) + os.pathsep + system_path
+        install(test_env=migration_env, message="更新していません")
+        assert legacy.read_bytes() == contents
+        assert linked.is_symlink()
+        migration_env["PATH"] = system_path
+        home = root / "home"
+        executable(legacy, '#!/bin/sh\necho "svcnest 0.9.0"\n')
+        fallback_env = migration_env | {"HOME": str(home), "CARGO_HOME": str(root / "empty cargo"),
+                                        "PATH": str(linked.parent) + os.pathsep + system_path}
+        install(test_env=fallback_env, message="更新していません")
+        assert (home / ".local/bin/svcnest").read_bytes() == contents
+        assert legacy.read_text().endswith('echo "svcnest 0.9.0"\n')
+        if os.geteuid() != 0:
+            # 書き込めない場所の既存 CLI も、権限エラーで中止せずに標準の配置先へ導入する。
+            readonly = root / "readonly bin"
+            readonly.mkdir()
+            executable(readonly / "svcnest", '#!/bin/sh\necho "svcnest 0.9.0"\n')
+            readonly.chmod(0o555)
+            try:
+                (home / ".local/bin/svcnest").unlink()
+                readonly_env = fallback_env | {"PATH": str(readonly) + os.pathsep + system_path}
+                install(test_env=readonly_env, message="更新していません")
+                assert (home / ".local/bin/svcnest").read_bytes() == contents
+                assert (readonly / "svcnest").read_text().endswith('echo "svcnest 0.9.0"\n')
+            finally:
+                readonly.chmod(0o755)
+
+        # リンク経由の表記で PATH にある配置先は、実体のパスでも登録済みとして扱う。
+        real_dir = root / "real bin"
+        real_dir.mkdir()
+        link_dir = root / "link bin"
+        link_dir.symlink_to(real_dir, target_is_directory=True)
+        link_profile = profiles / "linked"
+        link_env = env | {"SVCNEST_INSTALL_DIR": str(link_dir), "SHELL": "/bin/sh",
+                          "SVCNEST_PROFILE": str(link_profile), "PATH": str(link_dir) + os.pathsep + env["PATH"]}
+        install(modify_path=True, test_env=link_env)
+        assert (real_dir / "svcnest").read_bytes() == contents
+        assert not link_profile.exists(), "リンク経由で PATH にある配置先を重複して追加しました"
+
+        # 未対応のシェルでも配置は成功させ、PATH の手動設定を案内する。
+        unsupported_env = env | {"SHELL": "/bin/tcsh"}
+        unsupported_env.pop("SVCNEST_PROFILE", None)
+        install(modify_path=True, test_env=unsupported_env, message="未対応のシェル")
+        assert destination.read_bytes() == contents
+
         if native_binary:
             target = PLATFORMS[(platform.system(), platform.machine())]
             env.update(SVCNEST_TEST_OS=platform.system(), SVCNEST_TEST_ARCH=platform.machine())
@@ -296,7 +346,6 @@ shutil.copyfile(source, args[args.index("--output") + 1])
             definition = subprocess.check_output([str(legacy), "--home", str(root / "registered state"),
                                                  "daemon", "install", "--dry-run"], text=True)
             assert str(legacy) in definition
-            migration_env.pop("SVCNEST_INSTALL_DIR")
             migration_env.update(SVCNEST_TEST_OS=platform.system(), SVCNEST_TEST_ARCH=platform.machine())
             install(test_env=migration_env)
             after = subprocess.check_output([str(legacy), "--home", str(root / "registered state"),

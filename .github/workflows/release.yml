@@ -63,16 +63,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools
-      - name: Build and test
+      - name: Build
         shell: bash
         env:
           RELEASE_TARGET: ${{ matrix.target }}
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: |
-          threads=3
-          if [ "$RUNNER_OS" = Windows ]; then threads=1; fi
-          cargo test --locked --target "$RELEASE_TARGET" --all-targets -- --test-threads="$threads"
+          # macOS / Windows は ci で同じターゲットの全テストが成功済みのため、ci と異なる musl だけを再検証する。
+          if [ "$RUNNER_OS" = Linux ]; then
+            cargo test --locked --target "$RELEASE_TARGET" --all-targets -- --test-threads=3
+          fi
           cargo build --locked --release --target "$RELEASE_TARGET"
       - name: Package release
         shell: bash

@@ -114,6 +114,33 @@ try {
         Assert-Installer ($count -eq $first.Length -and [Convert]::ToBase64String($buffer) -eq [Convert]::ToBase64String($first)) '開いている旧ファイルを上書きしました。'
     } finally { $previous.Dispose() }
 
+    # 実行中で削除できなかった旧 exe は、次回の更新で削除する。
+    $stale = Join-Path $install '.svcnest-old-stale.exe'
+    [IO.File]::WriteAllText($stale, 'retired')
+    New-Fixture $first
+    Invoke-TestInstall
+    Assert-Installer (-not [IO.File]::Exists($stale)) '退避した旧 exe を削除しませんでした。'
+    Assert-Installer ([IO.File]::ReadAllText($destination) -ceq "svcnest $packageVersion") '旧 exe の削除後に配置できません。'
+
+    $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT -and $node) {
+        # 実行中の exe は上書き・削除できないため、単体で動く node.exe を配置先で常駐させて更新する。
+        [IO.File]::Copy($node.Path, $destination, $true)
+        $running = Start-Process -FilePath $destination -ArgumentList '-e', 'setTimeout(() => {}, 120000)' -PassThru -WindowStyle Hidden
+        try {
+            Start-Sleep -Milliseconds 500
+            Assert-Installer (-not $running.HasExited) '更新前の exe を常駐できません。'
+            Invoke-TestInstall
+            Assert-Installer ([IO.File]::ReadAllText($destination) -ceq "svcnest $packageVersion") '実行中の exe を更新できません。'
+            Assert-Installer (-not $running.HasExited) '更新中に実行中の exe が終了しました。'
+        } finally {
+            if (-not $running.HasExited) { $running.Kill() }
+            $running.WaitForExit()
+        }
+        Invoke-TestInstall
+        Assert-Installer (@(Get-ChildItem -LiteralPath $install -Filter '.svcnest-old-*' -Force).Count -eq 0) '終了後の旧 exe を削除しませんでした。'
+    }
+
     New-Fixture $first
     [IO.File]::AppendAllText($archive, 'tampered')
     Expect-InstallFailure 'SHA-256'
@@ -170,6 +197,29 @@ try {
     [IO.File]::WriteAllText($script:LegacyExecutable, 'svcnest 0.9.0')
     Invoke-TestInstall
     Assert-Installer ([IO.File]::ReadAllText($script:LegacyExecutable) -ceq 'svcnest 0.9.0') '明示的な別配置先への導入で既存 CLI を変更しました。'
+    # リンクや書き込めない既存 CLI は更新せず、次の候補か標準の配置先を使う。
+    $linkedDirectory = Join-Path $root 'linked bin'
+    [IO.Directory]::CreateDirectory($linkedDirectory) | Out-Null
+    $linked = Join-Path $linkedDirectory 'svcnest.exe'
+    $linkCreated = $false
+    try {
+        New-Item -ItemType SymbolicLink -Path $linked -Target $script:LegacyExecutable -ErrorAction Stop | Out-Null
+        $linkCreated = $true
+    } catch { Write-Host "シンボリックリンクを作成できないため、リンクの検証を省略します: $($_.Exception.Message)" }
+    if ($linkCreated) {
+        $script:LinkedExecutable = $linked
+        function Find-SvcnestExecutable { return @($script:LinkedExecutable, $script:LegacyExecutable) }
+        $script:SvcnestSkippedExecutable = $null
+        Assert-Installer ((Resolve-SvcnestInstallDirectory '') -ceq $legacyDirectory) 'リンクの次の既存 CLI を選択しませんでした。'
+        Assert-Installer ($script:SvcnestSkippedExecutable -ceq $linked) '更新しないリンクを記録しませんでした。'
+        function Find-SvcnestExecutable { return $script:LinkedExecutable }
+        $script:SvcnestSkippedExecutable = $null
+        $fallback = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs\svcnest'
+        Assert-Installer ((Resolve-SvcnestInstallDirectory '') -ceq [IO.Path]::GetFullPath($fallback)) 'リンクだけの場合に標準の配置先を選択しませんでした。'
+        function Find-SvcnestExecutable { return $script:LegacyExecutable }
+    }
+    Assert-Installer (Test-SvcnestUpdatableExecutable $script:LegacyExecutable) '書き込める既存 CLI を更新対象にしませんでした。'
+    Assert-Installer (-not (Test-SvcnestUpdatableExecutable (Join-Path $root 'missing\svcnest.exe'))) '存在しない既存 CLI を更新対象にしました。'
     $previousCargoHome = $env:CARGO_HOME
     $lookupPath = $env:Path
     try {
@@ -247,7 +297,9 @@ try {
     }
 
     # Invoke-Expression に渡した場合にも最後の処理が一度だけ開始することを確認する。
-    $bootstrap = [IO.File]::ReadAllText((Join-Path $source 'install.ps1'))
+    # irm が BOM を文字として残した場合も起動できるよう、BOM を除去せずに読み込む。
+    $bootstrap = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes((Join-Path $source 'install.ps1')))
+    Assert-Installer ($bootstrap[0] -eq [char]0xFEFF) 'BOM を残した Invoke-Expression の検証になっていません。'
     $tokens = $null
     $parseErrors = $null
     $syntax = [Management.Automation.Language.Parser]::ParseInput($bootstrap, [ref]$tokens, [ref]$parseErrors)

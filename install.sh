@@ -62,8 +62,19 @@ add_to_profile() {
     printf 'PATH を設定しました: %s\n' "$profile"
 }
 
+use_existing() {
+    [ -n "$1" ] && [ -f "$1" ] || return 1
+    # パッケージ管理のリンクや書き込めない場所は更新せず、標準の配置先へ導入する。
+    if [ -L "$1" ] || [ ! -w "$(dirname "$1")" ]; then
+        skipped_existing=${skipped_existing:-$1}
+        return 1
+    fi
+    install_dir=$(dirname "$1")
+}
+
 configure_path() {
-    case ":${PATH:-}:" in *:"$install_dir":*) return 0 ;; esac
+    # PATH にはリンクを解決する前の表記で登録されている場合がある。
+    case ":${PATH:-}:" in *:"$install_dir":*|*:"$requested_dir":*) return 0 ;; esac
     [ "$modify_path" = yes ] || return 0
     quoted_dir=$(shell_quote "$install_dir")
     path_line="case \":\${PATH:-}:\" in *:${quoted_dir}:*) ;; *) export PATH=${quoted_dir}:\"\${PATH:-}\" ;; esac"
@@ -91,7 +102,12 @@ configure_path() {
                 ;;
             fish) add_to_profile "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish" ;;
             sh|dash|ksh|'') add_to_profile "$HOME/.profile" ;;
-            *) fail "PATH の自動設定に未対応のシェルです: ${shell_name}（SVCNEST_PROFILE を指定してください）" ;;
+            *)
+                # バイナリは配置済みのため、PATH の設定だけを利用者に任せる。
+                printf 'svcnest: PATH の自動設定に未対応のシェルです: %s\n' "$shell_name" >&2
+                printf 'svcnest: %s を PATH に追加するか、SVCNEST_PROFILE を指定して再実行してください\n' "$install_dir" >&2
+                return 0
+                ;;
         esac
     fi
     printf '新しいターミナルを開くと svcnest コマンドを使えます。\n'
@@ -102,6 +118,7 @@ main() {
     install_dir=${SVCNEST_INSTALL_DIR:-}
     temporary=
     staging=
+    skipped_existing=
     modify_path=yes
     while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -124,12 +141,13 @@ main() {
     if [ -z "$install_dir" ]; then
         # 自動起動が参照する既存 CLI の絶対パスを、更新で変更しない。
         existing=$(command -v svcnest 2>/dev/null || true)
-        if [ -n "$existing" ] && [ -f "$existing" ]; then
-            install_dir=$(dirname "$existing")
-        elif [ -n "${CARGO_HOME:-}" ] && [ -f "$CARGO_HOME/bin/svcnest" ]; then
-            install_dir=$CARGO_HOME/bin
-        elif [ -n "${HOME:-}" ] && [ -f "$HOME/.cargo/bin/svcnest" ]; then
-            install_dir=$HOME/.cargo/bin
+        case "$existing" in /*) ;; *) existing= ;; esac
+        if use_existing "$existing"; then
+            :
+        elif [ -n "${CARGO_HOME:-}" ] && use_existing "$CARGO_HOME/bin/svcnest"; then
+            :
+        elif [ -n "${HOME:-}" ] && use_existing "$HOME/.cargo/bin/svcnest"; then
+            :
         else
             [ -n "${HOME:-}" ] || fail 'HOME または --install-dir を指定してください'
             install_dir=$HOME/.local/bin
@@ -211,6 +229,7 @@ main() {
     fi
 
     mkdir -p "$install_dir"
+    requested_dir=$install_dir
     install_dir=$(cd "$install_dir" && pwd -P)
     [ ! -L "$install_dir/svcnest" ] && [ ! -d "$install_dir/svcnest" ] \
         || fail "配置先がシンボリックリンクまたはディレクトリです: $install_dir/svcnest"
@@ -221,6 +240,10 @@ main() {
     mv -f "$staging/svcnest" "$install_dir/svcnest"
 
     printf 'インストール完了: %s\n配置先: %s/svcnest\n' "$installed_version" "$install_dir"
+    if [ -n "$skipped_existing" ]; then
+        printf 'svcnest: シンボリックリンクまたは書き込めない場所にある既存の %s は更新していません\n' "$skipped_existing" >&2
+        printf 'svcnest: PATH の順序によっては既存のコマンドが優先されます\n' >&2
+    fi
     configure_path
 }
 
