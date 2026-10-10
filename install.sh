@@ -8,7 +8,7 @@ svcnest のリリース済みバイナリをインストールします。
 
 使い方: sh install.sh [--version <version>] [--install-dir <directory>] [--no-modify-path]
 
-  --version       指定したバージョンを取得（例: 1.0.0 / v1.0.0）。標準は最新の安定版
+  --version       指定したバージョンを取得（例: 0.1.0 / v0.1.0）。標準は最新の安定版
   --install-dir   配置先。標準は既存の配置先、新規導入は $HOME/.local/bin
   --no-modify-path シェルの PATH 設定を変更しない
   -h, --help      この説明を表示

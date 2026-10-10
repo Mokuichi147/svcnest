@@ -84,7 +84,7 @@ class ReleaseTests(unittest.TestCase):
         (self.root / ".github/release-targets.json").write_text(json.dumps(TARGETS), encoding="utf-8")
         self.set_version("0.9.0")
         self.commit("初期版")
-        self.git("tag", "v0.9.0")
+        self.git("tag", "v0.0.1")
         self.set_version(VERSION + "-rc.1")
         self.commit("PATH の自動設定を追加")
         self.git("tag", TAG + "-rc.1")
@@ -172,7 +172,7 @@ class ReleaseTests(unittest.TestCase):
             result = before_upload(*args, **kwargs)
             if args[:3] == ("gh", "release", "upload"):
                 self.git("--git-dir", str(self.upstream), "update-ref", "refs/heads/main",
-                         self.git("rev-parse", "v0.9.0"))
+                         self.git("rev-parse", "v0.0.1"))
             return result
 
         fake.run = change_main_after_upload
@@ -182,15 +182,15 @@ class ReleaseTests(unittest.TestCase):
         self.assertFalse(any("--draft=false" in call for call in fake.calls))
 
     def test_previous_stable_release_includes_direct_commits_since_before_rc(self):
-        releases = [release("v0.9.0"), release(TAG + "-rc.1", prerelease=True, date="2026-10-08T00:00:00Z")]
+        releases = [release("v0.0.1"), release(TAG + "-rc.1", prerelease=True, date="2026-10-08T00:00:00Z")]
         current = publisher.tag_commit(TAG, self.root)
         previous, commit = publisher.previous_release(releases, TAG, current, self.root)
-        self.assertEqual(previous, "v0.9.0")
+        self.assertEqual(previous, "v0.0.1")
         notes = publisher.release_notes("example/svcnest", TAG, current, previous, commit, self.root)
         self.assertIn("PATH の自動設定を追加", notes)
         self.assertIn("引用符と \\[特殊文字\\] を修正", notes)
         self.assertNotIn("- 初期版", notes)
-        self.assertIn(f"compare/v0.9.0...{TAG}", notes)
+        self.assertIn(f"compare/v0.0.1...{TAG}", notes)
         for row in TARGETS:
             self.assertIn(f"svcnest-{row['target']}{row['extension']}", notes)
 
@@ -201,20 +201,20 @@ class ReleaseTests(unittest.TestCase):
         self.assertNotIn("/compare/", notes)
 
     def test_prerelease_can_compare_against_previous_prerelease(self):
-        self.git("tag", "v1.0.0-rc.0", "v0.9.0")
-        releases = [release("v0.9.0"), release("v1.0.0-rc.0", prerelease=True, date="2026-10-08T00:00:00Z")]
+        self.git("tag", TAG + "-rc.0", "v0.0.1")
+        releases = [release("v0.0.1"), release(TAG + "-rc.0", prerelease=True, date="2026-10-08T00:00:00Z")]
         previous, _ = publisher.previous_release(releases, TAG + "-rc.1", publisher.tag_commit(TAG, self.root), self.root)
-        self.assertEqual(previous, "v1.0.0-rc.0")
+        self.assertEqual(previous, TAG + "-rc.0")
 
     def test_drafts_and_missing_or_unrelated_tags_are_not_comparison_bases(self):
         self.git("checkout", "--orphan", "unrelated")
         self.commit("別の履歴")
         self.git("tag", "v8.0.0")
         self.git("checkout", "--detach", TAG)
-        releases = [release("v0.9.0"), release("v8.0.0", date="2026-10-08T00:00:00Z"),
+        releases = [release("v0.0.1"), release("v8.0.0", date="2026-10-08T00:00:00Z"),
                     release("missing", date="2026-10-09T00:00:00Z"), release(TAG + "-rc.1", draft=True)]
         previous, _ = publisher.previous_release(releases, TAG, publisher.tag_commit(TAG, self.root), self.root)
-        self.assertEqual(previous, "v0.9.0")
+        self.assertEqual(previous, "v0.0.1")
 
     def test_missing_or_damaged_assets_block_all_github_operations(self):
         archive = next(self.assets.glob("*.tar.gz"))
@@ -229,7 +229,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(fake.calls, [])
 
     def test_uploads_all_assets_before_publishing(self):
-        fake = FakeGithub([release("v0.9.0")])
+        fake = FakeGithub([release("v0.0.1")])
         self.publish(fake)
         self.assertEqual([call[2] for call in fake.calls if call[1] == "release"], ["create", "upload", "edit"])
         self.assertIn("--draft", fake.calls[1])
@@ -253,7 +253,7 @@ class ReleaseTests(unittest.TestCase):
     def test_prerelease_is_not_latest(self):
         tag = TAG + "-rc.1"
         self.git("checkout", "--detach", tag)
-        fake = FakeGithub([release("v0.9.0")])
+        fake = FakeGithub([release("v0.0.1")])
         self.publish(fake, tag)
         self.assertIn("--prerelease", fake.calls[1])
         self.assertIn("--latest=false", fake.calls[-1])
@@ -286,7 +286,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertFalse(any(call[1] == "release" for call in fake.calls))
 
     def test_wrong_checkout_blocks_publication(self):
-        self.git("checkout", "--detach", "v0.9.0")
+        self.git("checkout", "--detach", "v0.0.1")
         self.set_version(VERSION)
         fake = FakeGithub()
         with self.assertRaisesRegex(ValueError, "現在のコミット"):
