@@ -704,10 +704,20 @@ async fn daemon_command(paths: Paths, command: DaemonCommand) -> Result<i32> {
             if ipc::ping(&paths).await {
                 ipc::request(&paths, Command::Shutdown).await?;
             }
-            for _ in 0..100 {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            let mut next_ping = tokio::time::Instant::now() + Duration::from_secs(1);
+            while tokio::time::Instant::now() < deadline {
                 if Lock::try_acquire(&paths.daemon_lock())?.is_some() {
                     println!("Daemon stopped");
                     return Ok(0);
+                }
+                // 登録直後に OS の起動役が遅れて起動した daemon は、停止後にロックを取ることがある。
+                // 停止要求に応答した daemon は接続を受け付けないため、応答するのは後から起動した daemon。
+                if tokio::time::Instant::now() >= next_ping {
+                    if ipc::ping(&paths).await {
+                        let _ = ipc::request(&paths, Command::Shutdown).await;
+                    }
+                    next_ping = tokio::time::Instant::now() + Duration::from_secs(1);
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
