@@ -13,9 +13,12 @@ use std::{
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, clap::ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub enum RestartPolicy {
+    /// Never restart
     Never,
+    /// Restart after a non-zero exit or a signal
     #[default]
     OnFailure,
+    /// Restart after every exit
     Always,
 }
 
