@@ -47,7 +47,7 @@ macOS もビルド別コピーから常駐する方式に対応しました。ma
 
 タグ push 時の自動公開について、`python3 scripts/check-release.py` の 14 テストが macOS arm64 で成功しました。一時 Git リポジトリと模擬 GitHub の応答を使い、タグ・manifest・lock・checkout の一致、前回の公開版からの直接コミットを含む差分、初回と prerelease の比較、draft・存在しないタグ・別履歴の除外、5 種類の tar.gz / zip のファイル構成と SHA-256、配布物の不足・破損時の公開禁止、アップロード後の公開、失敗した draft の再実行、公開済みリリースの保持、過去の安定版の修正による Latest の維持を確認しています。梱包の単体検証はサンプルのファイル内容を使用し、実際の Mach-O の梱包・配置はインストーラー検証で確認しています。GitHub への書き込みは行っていません。
 
-Windows 用の `install.ps1` を追加し、macOS arm64 上の一時的な PowerShell 7.6.6 で共通処理の 70 項目を検証しました。Windows の判定、取得処理、バイナリのバージョン表示、ユーザー PATH の保存は模擬処理に置き換え、実ユーザーのレジストリを変更していません。SHA-256、更新、開いている旧ファイルの保持、取得・検証失敗時の既存ファイル保持、一時ファイルの削除、PATH の保持・重複防止、Invoke-Expression と引数付き ScriptBlock の起動を確認しています。実際の HTTPS とリダイレクトの取得も Microsoft の公開ページを使って成功しました。両方の `.ps1` は Windows PowerShell 5.1 で読み込める UTF-8 BOM 付きです。Windows のネイティブ PE の配置と実行は、CI に PowerShell 7 / Windows PowerShell 5.1 の検証を追加しましたが、実機での実行は未確認です。
+Windows 用の `install.ps1` を追加し、macOS arm64 上の一時的な PowerShell 7.6.6 で共通処理の 70 項目を検証しました。Windows の判定、取得処理、バイナリのバージョン表示、ユーザー PATH の保存は模擬処理に置き換え、実ユーザーのレジストリを変更していません。SHA-256、更新、開いている旧ファイルの保持、取得・検証失敗時の既存ファイル保持、一時ファイルの削除、PATH の保持・重複防止、Invoke-Expression と引数付き ScriptBlock の起動を確認しています。実際の HTTPS とリダイレクトの取得も Microsoft の公開ページを使って成功しました。両方の `.ps1` は Windows PowerShell 5.1 で読み込める UTF-8 BOM 付きにしましたが、`install.ps1` は `irm | iex` で実行するため後に BOM を除いています。Windows のネイティブ PE の配置と実行は、CI に PowerShell 7 / Windows PowerShell 5.1 の検証を追加しましたが、実機での実行は未確認です。
 
 リリースから既存 `ci.yml` を `workflow_call` で呼び出し、配布用ビルドは `validate` と `ci`、公開は `ci` と `build` を依存先にしました。5 環境の CI がすべて成功することを要求する依存関係と YAML / シェル / PowerShell の構文をローカルで確認しました。タグ push 時は通常 CI の二重起動を避け、リリースから同じコミットの CI 全項目を呼び出します。GitHub 上での実際の全 CI と公開の実行は未確認です。
 
