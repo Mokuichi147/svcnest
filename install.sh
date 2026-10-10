@@ -16,7 +16,6 @@ svcnest のリリース済みバイナリをインストールします。
 配置先は環境変数 SVCNEST_INSTALL_DIR でも指定できます。
 PATH はシェルの起動設定へ自動追加します。反映には新しいターミナルを開いてください。
 設定ファイルを指定する場合は SVCNEST_PROFILE を使用できます。
-Linux で更新する場合は、先に svcnest daemon stop で常駐プロセスを停止してください。
 EOF
 }
 

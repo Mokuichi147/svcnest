@@ -177,7 +177,7 @@ cargo build --locked --release
 
 `cargo test` は一時ディレクトリと専用の daemon を使用し、自動起動の実機設定を変更しません。実際の子・孫プロセス、同時起動、daemon の強制終了、foreground 実行、再起動バックオフを検証します。CI は macOS arm64 / Intel、Windows x64、Ubuntu x86_64 / arm64 で同じ確認を実行します。runner のラベルは [GitHub の公式一覧](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) に基づいています。
 
-実際の OS 連携は `python scripts/native-os-smoke.py` で検証できます。`uv` と、macOS の GUI ログイン、Linux の systemd user セッション、または Windows のログイン済みユーザー環境が必要です。専用の自動起動を一時登録し、登録の修復、自動起動、daemon のクラッシュ回復、重複防止、foreground の Ctrl+C を確認して、終了時に登録と一時ファイルを削除します。CI の Linux ではテスト基盤として user manager を先に開始します。svcnest 自体の操作は一般ユーザーで実行します。確認済みの範囲は [docs/validation.md](docs/validation.md) に記載しています。
+実際の OS 連携は `python scripts/native-os-smoke.py` で検証できます。`uv` と、macOS の GUI ログイン、Linux の systemd user セッション、または Windows のログイン済みユーザー環境が必要です。専用の自動起動を一時登録し、登録の修復、自動起動、daemon のクラッシュ回復、重複防止、foreground の Ctrl+C を確認して、終了時に登録と一時ファイルを削除します。CI の Linux ではテスト基盤として user manager を先に開始します。svcnest 自体の操作は一般ユーザーで実行します。
 
 Windows のクラッシュ検証では、旧プロセスの回収を確認してから Task Scheduler で daemon を再起動し、enabled サービスが復旧することを確認します。Task Scheduler の [RestartOnFailure](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tsch/2ff4aa5a-7bc4-449f-bbb1-27475645867f) は起動失敗の再試行を設定するもので、実行中の daemon の強制終了からの自動再起動は保証しません。
 
