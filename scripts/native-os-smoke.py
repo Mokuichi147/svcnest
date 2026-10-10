@@ -304,6 +304,12 @@ def main():
             if sys.platform in ("darwin", "linux"):
                 checks += ["update preserves daemon and service PIDs", "enable and install preserve the loaded daemon", "OS registration selects the updated runtime"]
             print(json.dumps({"success": True, "platform": sys.platform, "checks": checks}, ensure_ascii=False))
+        except BaseException:
+            # 失敗時は daemon の起動・停止の経緯を CI のログから追えるようにする。
+            log = canonical_home / "logs/daemon.log"
+            if log.exists():
+                print(f"--- {log} ---\n{log.read_text(encoding='utf-8', errors='replace')[-20000:]}", file=sys.stderr)
+            raise
         finally:
             if foreground is not None and foreground.poll() is None:
                 interrupt_foreground(foreground)
