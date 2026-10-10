@@ -4,6 +4,8 @@ param([string]$Binary)
 $ErrorActionPreference = 'Stop'
 $source = Split-Path $PSScriptRoot -Parent
 . (Join-Path $source 'install.ps1')
+# Windows PowerShell 5.1 では ZipArchiveMode の定義元も明示的に読み込む。
+Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $root = Join-Path ([IO.Path]::GetTempPath()) ('svcnest-windows-installer-check-' + [Guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($root) | Out-Null
