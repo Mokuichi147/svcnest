@@ -13,6 +13,12 @@ from release_metadata import release_targets, release_version
 TARGETS = tuple(row["target"] for row in release_targets())
 
 
+def archive_permissions(entry):
+    # Windows 上で検証・梱包しても Unix の実行権限を持つアーカイブにする。
+    entry.mode = 0o755 if entry.name == "svcnest" else 0o644
+    return entry
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", choices=TARGETS, required=True)
@@ -36,8 +42,8 @@ def main():
             package.write(source / "LICENSE", "LICENSE")
     else:
         with tarfile.open(archive, "w:gz") as package:
-            package.add(binary, arcname=filename)
-            package.add(source / "LICENSE", arcname="LICENSE")
+            package.add(binary, arcname=filename, filter=archive_permissions)
+            package.add(source / "LICENSE", arcname="LICENSE", filter=archive_permissions)
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     archive.with_name(archive.name + ".sha256").write_text(f"{digest}  {archive.name}\n", encoding="ascii")
     print(archive)

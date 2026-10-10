@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 from urllib.parse import quote
 
-from release_metadata import SOURCE, release_targets, validate_tag
+from release_metadata import SOURCE, release_targets, validate_main_history, validate_tag
 
 
 def run(*args, source=SOURCE, check=True):
@@ -102,6 +102,8 @@ def publish(repository, tag, directory, source=SOURCE):
         raise ValueError(f"ローカルにリリース対象のタグがありません: {tag}")
     if run("git", "rev-parse", "HEAD", source=source).stdout.strip() != current:
         raise ValueError("リリース対象のタグと現在のコミットが一致しません")
+    run("git", "fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main", source=source)
+    validate_main_history(tag, source)
     assets = validate_artifacts(directory)
     pages = json.loads(run("gh", "api", f"repos/{repository}/releases?per_page=100", "--paginate", "--slurp", source=source).stdout)
     releases = [release for page in pages for release in page]
@@ -128,6 +130,9 @@ def publish(repository, tag, directory, source=SOURCE):
         run("gh", "release", "upload", tag, *(str(asset) for asset in assets), "--repo", repository,
             "--clobber", source=source)
         latest = str(should_be_latest(tag, releases)).lower()
+        # CI やアップロード中に main が変更されても、公開時点で条件を満たすことを確認する。
+        run("git", "fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main", source=source)
+        validate_main_history(tag, source)
         run("gh", "release", "edit", tag, "--repo", repository, "--draft=false",
             f"--prerelease={str(prerelease).lower()}", f"--latest={latest}", source=source)
     print(f"リリースを公開しました: https://github.com/{repository}/releases/tag/{quote(tag, safe='')}")

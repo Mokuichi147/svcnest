@@ -67,7 +67,9 @@ class ReleaseTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="svcnest-release-check-")
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name).resolve()
+        self.root = Path(self.temporary.name).resolve() / "checkout"
+        self.root.mkdir()
+        self.upstream = self.root.parent / "upstream.git"
         self.assets = self.root / "dist"
         self.assets.mkdir()
         # 実ユーザーの Git 設定、フック、署名設定へ依存しない一時リポジトリを使う。
@@ -89,6 +91,10 @@ class ReleaseTests(unittest.TestCase):
         self.set_version(VERSION)
         self.commit("引用符と [特殊文字] を修正")
         self.git("tag", TAG)
+        self.git("init", "--bare", "-q", str(self.upstream))
+        self.git("remote", "add", "origin", str(self.upstream))
+        self.git("push", "-q", "origin", "HEAD:refs/heads/main")
+        self.git("fetch", "-q", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main")
         for row in TARGETS:
             name = f"svcnest-{row['target']}{row['extension']}"
             archive = self.assets / name
@@ -123,6 +129,57 @@ class ReleaseTests(unittest.TestCase):
         (self.root / "Cargo.lock").write_text('[[package]]\nname = "svcnest"\nversion = "0.0.0"\n')
         with self.assertRaisesRegex(ValueError, "Cargo.lock"):
             release_metadata.validate_tag(TAG)
+
+    def test_main_history_accepts_annotated_tags_and_older_main_commits(self):
+        self.git("tag", "-af", TAG, "-m", "main の公開用タグ")
+        self.assertEqual(release_metadata.validate_main_history(TAG, self.root), self.git("rev-parse", "HEAD"))
+        self.assertEqual(release_metadata.validate_main_history(TAG + "-rc.1", self.root),
+                         self.git("rev-parse", TAG + "-rc.1"))
+
+    def test_unmerged_branch_tag_blocks_metadata_and_all_github_operations(self):
+        self.git("checkout", "-b", "feature")
+        (self.root / "unmerged.txt").write_text("main に未反映の変更\n", encoding="utf-8")
+        self.commit("別ブランチの変更")
+        self.git("tag", "-f", TAG)
+        # バージョン一致だけでは拒否できないタグでも、main への未反映を検出する。
+        release_metadata.validate_tag(TAG)
+        with patch.object(sys, "argv", ["release_metadata.py", "--tag", TAG]):
+            with self.assertRaisesRegex(ValueError, "origin/main の履歴に含まれていません"):
+                release_metadata.main()
+        fake = FakeGithub()
+        with self.assertRaisesRegex(ValueError, "origin/main の履歴に含まれていません"):
+            self.publish(fake)
+        self.assertEqual(fake.calls, [])
+        self.assertFalse((self.assets / "SHA256SUMS").exists())
+
+    def test_missing_main_reference_is_rejected(self):
+        self.git("update-ref", "-d", "refs/remotes/origin/main")
+        with self.assertRaisesRegex(ValueError, "origin/main を確認できません"):
+            release_metadata.validate_main_history(TAG, self.root)
+
+    def test_missing_remote_main_blocks_publication(self):
+        self.git("--git-dir", str(self.upstream), "update-ref", "-d", "refs/heads/main")
+        fake = FakeGithub()
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.publish(fake)
+        self.assertEqual(fake.calls, [])
+
+    def test_main_is_checked_again_before_publishing_the_uploaded_draft(self):
+        fake = FakeGithub()
+        before_upload = fake.run
+
+        def change_main_after_upload(*args, **kwargs):
+            result = before_upload(*args, **kwargs)
+            if args[:3] == ("gh", "release", "upload"):
+                self.git("--git-dir", str(self.upstream), "update-ref", "refs/heads/main",
+                         self.git("rev-parse", "v0.9.0"))
+            return result
+
+        fake.run = change_main_after_upload
+        with self.assertRaisesRegex(ValueError, "origin/main の履歴に含まれていません"):
+            self.publish(fake)
+        self.assertTrue(fake.releases[-1]["draft"])
+        self.assertFalse(any("--draft=false" in call for call in fake.calls))
 
     def test_previous_stable_release_includes_direct_commits_since_before_rc(self):
         releases = [release("v0.9.0"), release(TAG + "-rc.1", prerelease=True, date="2026-10-08T00:00:00Z")]
@@ -240,7 +297,8 @@ class ReleaseTests(unittest.TestCase):
         package = runpy.run_path(str(SOURCE / "scripts/package-release.py"))
         binary = self.root / "binary"
         binary.write_bytes(b"binary fixture")
-        binary.chmod(0o755)
+        # Windows と同様に元ファイルに Unix の実行権限がなくても梱包できる。
+        binary.chmod(0o644)
         for row in TARGETS:
             with self.subTest(target=row["target"]):
                 argv = ["package-release.py", "--target", row["target"], "--binary", str(binary), "--output-dir", str(self.assets)]
@@ -256,7 +314,8 @@ class ReleaseTests(unittest.TestCase):
                     with tarfile.open(archive) as contents:
                         self.assertEqual(set(contents.getnames()), {filename, "LICENSE"})
                         self.assertEqual(contents.extractfile(filename).read(), binary.read_bytes())
-                        self.assertTrue(contents.getmember(filename).mode & 0o111)
+                        self.assertEqual(contents.getmember(filename).mode, 0o755)
+                        self.assertEqual(contents.getmember("LICENSE").mode, 0o644)
         publisher.validate_artifacts(self.assets)
 
 

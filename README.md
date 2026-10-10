@@ -202,14 +202,18 @@ svcnest daemon install
 
 ### リリースの公開
 
-公開対象のコミットで `Cargo.toml` / `Cargo.lock` のバージョンを揃え、同じバージョンの `v<version>` タグを push すると、GitHub Actions がそのコミットをビルドして GitHub Releases へ公開します。例えば 1.0.0 の公開は次の操作です。
+`main` の履歴に含まれる公開対象コミットで `Cargo.toml` / `Cargo.lock` のバージョンを揃え、同じバージョンの `v<version>` タグを push すると、GitHub Actions がそのコミットをビルドして GitHub Releases へ公開します。`main` にマージされていない別ブランチのコミットへのタグは、バージョンが一致していても拒否します。例えば 1.0.0 の公開は次の操作です。
 
 ```sh
+git switch main
+git pull --ff-only origin main
 git tag -a v1.0.0 -m 'v1.0.0 を公開'
 git push origin v1.0.0
 ```
 
 タグを付けるコミットには `.github/workflows/release.yml` とリリース用スクリプトを含めてください。README のインストールコマンドは `main/install.sh` / `main/install.ps1` を取得するため、初回公開時は両方のインストーラーも `main` へ反映します。
+
+タグ先が `origin/main` の履歴に含まれることを、最新の `main` を取得したうえで CI 開始前と公開処理で確認します。配布物のアップロード後、draft を公開する直前にも再取得・再確認します。`main` の取得や検証ができない場合も公開しません。
 
 リリースノートには、前回の公開リリースから追加されたコミットの件名・リンクと、差分全体へのリンクを載せます。PR を使わずに直接コミットした変更も含みます。安定版は同じ履歴上の直前の安定版、prerelease は直前の公開版（prerelease を含む）と比較します。初回は全コミットの一覧を載せます。
 
