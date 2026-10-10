@@ -6,13 +6,21 @@
 
 ## インストールと基本操作
 
-Rust stable（1.89 以上）が必要です。リポジトリを取得し、そのディレクトリでインストールします。
+macOS / Linux は次のコマンドでインストールします。Rust と管理者権限は不要です。
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/Mokuichi147/svcnest/main/install.sh | sh
+```
+
+Windows は PowerShell で実行します。
+
+```powershell
+irm https://raw.githubusercontent.com/Mokuichi147/svcnest/main/install.ps1 | iex
+```
+
+PATH は自動設定します。macOS / Linux では、インストール後に新しいターミナルを開いてください。
 
 ```bash
-git clone https://github.com/Mokuichi147/svcnest.git
-cd svcnest
-cargo install --path . --locked
-
 cd ~/projects/api
 svcnest add api -- uv run main.py --port 8000
 svcnest enable --now
@@ -132,21 +140,21 @@ svcnest add api \
 | Linux | `systemd --user` | `$XDG_CONFIG_HOME/svcnest/` または `~/.config/svcnest/` |
 | Windows | 現在のユーザーのログオン時に動く Task Scheduler | `%LOCALAPPDATA%\svcnest\` |
 
-`--home <directory>` または `SVCNEST_HOME` で保存先を変更できます。daemon は保存先にかかわらず一人のユーザーにつき一つです。保存先を切り替えるときは、それまでの保存先の daemon を先に停止してください。OS 登録には起動した実行ファイルの絶対パスを使用するため、通常利用では `cargo install` などで固定した場所へインストールしてください。登録ファイルが残っていても OS 側の登録がなくなっていた場合は、`enable` / `daemon install` で復元します。
+`--home <directory>` または `SVCNEST_HOME` で保存先を変更できます。daemon は保存先にかかわらず一人のユーザーにつき一つです。保存先を切り替えるときは、それまでの保存先の daemon を先に停止してください。OS 登録には起動した実行ファイルの絶対パスを使用するため、通常利用では固定した場所へインストールしてください。登録ファイルが残っていても OS 側の登録がなくなっていた場合は、`enable` / `daemon install` で復元します。
 
 daemon が異常終了した場合は、サービスの子・孫プロセスも停止します。
 
 ### macOS / Linux / Windows での常駐中の更新
 
-daemon とサービスを動かしたまま、リポジトリのディレクトリで `cargo install --path . --locked` を実行して更新できます。
+daemon とサービスを動かしたまま、インストール時と同じコマンドを再実行して更新できます。
 
 稼働中の daemon とサービスは更新前のバイナリで動き続け、新しい daemon は次回起動時に使います。更新のたびに自動起動を登録し直す必要はありません。
 
-新しい daemon をすぐに使う場合は、daemon とサービスを一度停止してから更新します。旧ビルドからの移行も含め、次の手順をリポジトリのディレクトリで実行してください。
+新しい daemon をすぐに使う場合は、daemon とサービスを一度停止してから更新します。旧ビルドからの移行も含め、次の手順で更新してください。
 
 ```sh
 svcnest daemon stop
-cargo install --path . --locked
+# 上記のインストールコマンドを再実行
 svcnest daemon install
 ```
 

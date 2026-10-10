@@ -1,0 +1,128 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.metadata.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate release metadata
+        id: metadata
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          matrix=$(python scripts/release_metadata.py --tag "$RELEASE_TAG")
+          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
+      - name: Validate release tooling
+        run: python scripts/check-release.py
+
+  ci:
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: ${{ matrix.label }}
+    needs: [validate, ci]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.validate.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-node@v4
+        if: runner.os == 'Windows'
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install musl linker
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+      - name: Build
+        shell: bash
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: |
+          # macOS / Windows は ci で同じターゲットの全テストが成功済みのため、ci と異なる musl だけを再検証する。
+          if [ "$RUNNER_OS" = Linux ]; then
+            cargo test --locked --target "$RELEASE_TARGET" --all-targets -- --test-threads=3
+          fi
+          cargo build --locked --release --target "$RELEASE_TARGET"
+      - name: Package release
+        shell: bash
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: python scripts/package-release.py --target "$RELEASE_TARGET"
+      - name: Verify installer
+        if: runner.os != 'Windows'
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: python scripts/check-installer.py --binary "target/$RELEASE_TARGET/release/svcnest"
+      - name: Verify Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: ./scripts/check-windows-installer.ps1 -Binary "target/$env:RELEASE_TARGET/release/svcnest.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: [ci, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: release-publish
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python scripts/publish-release.py --repository "$GH_REPO" --tag "$RELEASE_TAG" --assets-dir dist
