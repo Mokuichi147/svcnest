@@ -92,14 +92,14 @@ shutil.copyfile(source, args[args.index("--output") + 1])
             fixture(assets, target, contents)
         destination = Path(env["SVCNEST_INSTALL_DIR"]) / "svcnest"
 
-        def install(*options, succeeds=True, message=None, streamed=False, modify_path=False):
+        def install(*options, succeeds=True, message=None, streamed=False, modify_path=False, test_env=None):
             nonlocal checked
             # パイプで受け取る sh と、保存したスクリプトの実行を両方検証する。
             command = ["sh", "-s", "--"] if streamed else ["sh", str(SOURCE / "install.sh")]
             # 実ユーザーの設定ファイルへ書き込まず、専用の一時設定だけを検証する。
             if not modify_path:
                 command.append("--no-modify-path")
-            result = subprocess.run(command + list(options), env=env, capture_output=True, text=True,
+            result = subprocess.run(command + list(options), env=env if test_env is None else test_env, capture_output=True, text=True,
                                     input=(SOURCE / "install.sh").read_text() if streamed else None, timeout=30)
             assert (result.returncode == 0) == succeeds, result.stdout + result.stderr
             if message:
@@ -249,6 +249,41 @@ shutil.copyfile(source, args[args.index("--output") + 1])
             env.pop("SVCNEST_PROFILE")
             checked += 1
 
+        # 既存 Cargo CLI と自動起動の参照先を、既定インストールでそのまま更新する。
+        cargo = root / "legacy cargo"
+        legacy = cargo / "bin/svcnest"
+        legacy.parent.mkdir(parents=True)
+        executable(legacy, '#!/bin/sh\necho "svcnest 0.9.0"\n')
+        migration_env = env.copy()
+        migration_env.pop("SVCNEST_INSTALL_DIR")
+        migration_env["CARGO_HOME"] = str(cargo)
+        migration_env["SVCNEST_PROFILE"] = str(profiles / "migration")
+        system_path = os.pathsep.join((str(shims), "/usr/bin", "/bin", "/usr/sbin", "/sbin"))
+        migration_env["PATH"] = os.pathsep.join((str(legacy.parent), str(destination.parent), system_path))
+        fixture(assets, PLATFORMS[(env["SVCNEST_TEST_OS"], env["SVCNEST_TEST_ARCH"])], contents)
+        install(modify_path=True, test_env=migration_env)
+        assert legacy.read_bytes() == contents
+        selected = subprocess.check_output(["sh", "-c", 'command -v svcnest; svcnest --version'], env=migration_env, text=True).splitlines()
+        assert selected == [str(legacy), f"svcnest {VERSION}"]
+        assert not (profiles / "migration").exists()
+
+        # PATH にない既存 Cargo インストールも CARGO_HOME から見つける。
+        executable(legacy, '#!/bin/sh\necho "svcnest 0.9.0"\n')
+        migration_env["PATH"] = system_path
+        install(test_env=migration_env)
+        assert legacy.read_bytes() == contents
+
+        # 明示した CLI 引数または環境変数の配置先は、自動検出より優先する。
+        executable(legacy, '#!/bin/sh\necho "svcnest 0.9.0"\n')
+        migration_env["PATH"] = str(legacy.parent) + os.pathsep + system_path
+        explicit = root / "explicit install"
+        install("--install-dir", str(explicit), test_env=migration_env)
+        assert (explicit / "svcnest").read_bytes() == contents
+        assert legacy.read_text().endswith('echo "svcnest 0.9.0"\n')
+        migration_env["SVCNEST_INSTALL_DIR"] = str(explicit)
+        install(test_env=migration_env)
+        assert legacy.read_text().endswith('echo "svcnest 0.9.0"\n')
+
         if native_binary:
             target = PLATFORMS[(platform.system(), platform.machine())]
             env.update(SVCNEST_TEST_OS=platform.system(), SVCNEST_TEST_ARCH=platform.machine())
@@ -257,6 +292,16 @@ shutil.copyfile(source, args[args.index("--output") + 1])
             install(streamed=True)
             assert destination.read_bytes() == native_binary.read_bytes()
             subprocess.run([str(destination), "--help"], check=True, stdout=subprocess.DEVNULL, timeout=30)
+            shutil.copy2(native_binary, legacy)
+            definition = subprocess.check_output([str(legacy), "--home", str(root / "registered state"),
+                                                 "daemon", "install", "--dry-run"], text=True)
+            assert str(legacy) in definition
+            migration_env.pop("SVCNEST_INSTALL_DIR")
+            migration_env.update(SVCNEST_TEST_OS=platform.system(), SVCNEST_TEST_ARCH=platform.machine())
+            install(test_env=migration_env)
+            after = subprocess.check_output([str(legacy), "--home", str(root / "registered state"),
+                                            "daemon", "install", "--dry-run"], text=True)
+            assert after == definition, "更新によって自動起動の実行ファイルの参照先が変わりました"
     print(f"インストーラー検証成功: {checked} 件")
 
 

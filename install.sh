@@ -9,7 +9,7 @@ svcnest のリリース済みバイナリをインストールします。
 使い方: sh install.sh [--version <version>] [--install-dir <directory>] [--no-modify-path]
 
   --version       指定したバージョンを取得（例: 1.0.0 / v1.0.0）。標準は最新の安定版
-  --install-dir   配置先。標準は $HOME/.local/bin
+  --install-dir   配置先。標準は既存の配置先、新規導入は $HOME/.local/bin
   --no-modify-path シェルの PATH 設定を変更しない
   -h, --help      この説明を表示
 
@@ -122,8 +122,18 @@ main() {
     done
 
     if [ -z "$install_dir" ]; then
-        [ -n "${HOME:-}" ] || fail 'HOME または --install-dir を指定してください'
-        install_dir=$HOME/.local/bin
+        # 自動起動が参照する既存 CLI の絶対パスを、更新で変更しない。
+        existing=$(command -v svcnest 2>/dev/null || true)
+        if [ -n "$existing" ] && [ -f "$existing" ]; then
+            install_dir=$(dirname "$existing")
+        elif [ -n "${CARGO_HOME:-}" ] && [ -f "$CARGO_HOME/bin/svcnest" ]; then
+            install_dir=$CARGO_HOME/bin
+        elif [ -n "${HOME:-}" ] && [ -f "$HOME/.cargo/bin/svcnest" ]; then
+            install_dir=$HOME/.cargo/bin
+        else
+            [ -n "${HOME:-}" ] || fail 'HOME または --install-dir を指定してください'
+            install_dir=$HOME/.local/bin
+        fi
     fi
     # オプションに見える相対パスも、通常のパスとして扱う。
     case "$install_dir" in /*) ;; *) install_dir=$PWD/$install_dir ;; esac

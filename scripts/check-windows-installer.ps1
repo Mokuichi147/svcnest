@@ -26,6 +26,9 @@ $previousProbePath = $env:SVCNEST_TEST_BIN
 $realBinaryVersion = (Get-Command Get-SvcnestBinaryVersion).ScriptBlock
 $realTarget = (Get-Command Get-SvcnestWindowsTarget).ScriptBlock
 $realReceive = (Get-Command Receive-SvcnestFile).ScriptBlock
+$realFind = (Get-Command Find-SvcnestExecutable).ScriptBlock
+$realUserPathGet = (Get-Command Get-SvcnestUserPath).ScriptBlock
+$realUserPathSet = (Get-Command Set-SvcnestUserPath).ScriptBlock
 $manifest = [IO.File]::ReadAllText((Join-Path $source 'Cargo.toml'))
 $packageVersion = [regex]::Match($manifest, '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
 
@@ -154,6 +157,77 @@ try {
     Assert-Installer ((Add-SvcnestPath $rawPath $install) -ceq $rawPath) '既存 PATH 内の環境変数表記を展開して保存しました。'
     Assert-Installer ((Add-SvcnestPath ($install.ToUpperInvariant() + [IO.Path]::DirectorySeparatorChar) $install) -ceq ($install.ToUpperInvariant() + [IO.Path]::DirectorySeparatorChar)) '大文字や末尾区切りの違いで PATH を重複しました。'
 
+    # 既存 Cargo の配置先を使い、自動起動の参照先を変えずに更新する。
+    $cargo = Join-Path $root 'legacy cargo'
+    $legacyDirectory = Join-Path $cargo 'bin'
+    [IO.Directory]::CreateDirectory($legacyDirectory) | Out-Null
+    $script:LegacyExecutable = Join-Path $legacyDirectory 'svcnest.exe'
+    [IO.File]::WriteAllText($script:LegacyExecutable, 'svcnest 0.9.0')
+    function Find-SvcnestExecutable { return $script:LegacyExecutable }
+    Install-Svcnest -InstallDir '' -NoModifyPath
+    Assert-Installer ([IO.File]::ReadAllText($script:LegacyExecutable) -ceq "svcnest $packageVersion") '既存の Cargo 配置先を更新できません。'
+    Assert-Installer ((Resolve-SvcnestInstallDirectory $install) -ceq $install) '明示した配置先を優先しませんでした。'
+    [IO.File]::WriteAllText($script:LegacyExecutable, 'svcnest 0.9.0')
+    Invoke-TestInstall
+    Assert-Installer ([IO.File]::ReadAllText($script:LegacyExecutable) -ceq 'svcnest 0.9.0') '明示的な別配置先への導入で既存 CLI を変更しました。'
+    $previousCargoHome = $env:CARGO_HOME
+    $lookupPath = $env:Path
+    try {
+        $env:CARGO_HOME = $cargo
+        $env:Path = ''
+        Assert-Installer ((& $realFind) -ceq $script:LegacyExecutable) 'PATH にない既存 Cargo 配置先を見つけられません。'
+        if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+            $env:Path = "$legacyDirectory;$lookupPath"
+            Assert-Installer ((& $realFind) -ceq $script:LegacyExecutable) 'PATH 内の既存 CLI を見つけられません。'
+        }
+    } finally { $env:CARGO_HOME = $previousCargoHome; $env:Path = $lookupPath }
+
+    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+        # 実ユーザーの Environment ではなく、隔離した実レジストリで getter / setter を検証する。
+        $script:RegistryTestPath = 'Software\svcnest\InstallerTests\' + [Guid]::NewGuid().ToString('N')
+        $script:Notifications = 0
+        function Open-SvcnestUserEnvironment([switch]$Writable) {
+            if ($Writable) { return [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($script:RegistryTestPath) }
+            return [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($script:RegistryTestPath)
+        }
+        function Send-SvcnestEnvironmentChange { $script:Notifications++ }
+        $mockGet = (Get-Command Get-SvcnestUserPath).ScriptBlock
+        $mockSet = (Get-Command Set-SvcnestUserPath).ScriptBlock
+        $previousJava = $env:SVCNEST_TEST_JAVA_HOME
+        $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($script:RegistryTestPath)
+        try {
+            Set-Item Function:Get-SvcnestUserPath $realUserPathGet
+            Set-Item Function:Set-SvcnestUserPath $realUserPathSet
+            $env:SVCNEST_TEST_JAVA_HOME = Join-Path $root 'jdk17'
+            $raw = '%SVCNEST_TEST_JAVA_HOME%\bin;existing-user-path'
+            $key.SetValue('Path', $raw, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+            Assert-Installer ((Get-SvcnestUserPath) -ceq $raw) 'getter が PATH の変数参照を展開しました。'
+            Update-SvcnestPath $install
+            $expected = "$install;$raw"
+            Assert-Installer ((Get-SvcnestUserPath) -ceq $expected) 'PATH の変数参照を保存時に変更しました。'
+            Assert-Installer ($key.GetValueKind('Path') -eq [Microsoft.Win32.RegistryValueKind]::ExpandString) 'REG_EXPAND_SZ を保持しませんでした。'
+            $env:SVCNEST_TEST_JAVA_HOME = Join-Path $root 'jdk21'
+            Assert-Installer ($key.GetValue('Path') -ceq [Environment]::ExpandEnvironmentVariables($expected)) 'PATH が新しい環境変数の値に追従しませんでした。'
+            $notifications = $script:Notifications
+            Update-SvcnestPath $install
+            Assert-Installer ($script:Notifications -eq $notifications) '同じ PATH を重複して保存しました。'
+            $key.SetValue('Path', $raw, [Microsoft.Win32.RegistryValueKind]::String)
+            Update-SvcnestPath $install
+            Assert-Installer ($key.GetValueKind('Path') -eq [Microsoft.Win32.RegistryValueKind]::String) 'REG_SZ の種類を変更しました。'
+            Assert-Installer ($key.GetValue('Path') -ceq $expected) 'REG_SZ の未展開値を変更しました。'
+            $key.DeleteValue('Path')
+            Update-SvcnestPath $install
+            Assert-Installer ((Get-SvcnestUserPath) -ceq $install) 'ユーザー PATH を新規作成できません。'
+            Assert-Installer ($key.GetValueKind('Path') -eq [Microsoft.Win32.RegistryValueKind]::ExpandString) '新規 PATH に展開可能な種類を指定しませんでした。'
+        } finally {
+            Set-Item Function:Get-SvcnestUserPath $mockGet
+            Set-Item Function:Set-SvcnestUserPath $mockSet
+            $env:SVCNEST_TEST_JAVA_HOME = $previousJava
+            $key.Dispose()
+            [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($script:RegistryTestPath)
+        }
+    }
+
     if ($Binary) {
         # Windows CI では実際の配布用 PE を梱包し、配置後に実行する。
         Set-Item Function:Get-SvcnestBinaryVersion $realBinaryVersion
@@ -164,6 +238,12 @@ try {
         $actualVersion = & $destination --version
         Assert-Installer ($LASTEXITCODE -eq 0 -and $actualVersion -ceq "svcnest $packageVersion") '配置した実際の Windows バイナリを実行できません。'
         Assert-Installer ((Get-FileHash -LiteralPath $native).Hash -eq (Get-FileHash -LiteralPath $destination).Hash) '配布バイナリと配置後の内容が一致しません。'
+        [IO.File]::Copy($native, $script:LegacyExecutable, $true)
+        $definition = & $script:LegacyExecutable --home (Join-Path $root 'registered state') daemon install --dry-run
+        Install-Svcnest -InstallDir '' -NoModifyPath
+        $after = & $script:LegacyExecutable --home (Join-Path $root 'registered state') daemon install --dry-run
+        Assert-Installer (($definition -join "`n") -ceq ($after -join "`n")) '更新で自動起動の参照先が変わりました。'
+        Assert-Installer ((Get-FileHash -LiteralPath $native).Hash -eq (Get-FileHash -LiteralPath $script:LegacyExecutable).Hash) '既存の配置先のバイナリを更新できません。'
     }
 
     # Invoke-Expression に渡した場合にも最後の処理が一度だけ開始することを確認する。

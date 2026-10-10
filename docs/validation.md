@@ -57,6 +57,10 @@ PR #4 の初回 CI は macOS arm64 / Intel と Linux x86_64 / arm64 で成功し
 
 2026-10-10 の PR #4 の再実行では、PowerShell 7 のインストーラー検証 74 件は成功しましたが、Windows PowerShell 5.1 で `System.IO.Compression.ZipArchiveMode` が未読み込みのため失敗しました。検証スクリプトで `System.IO.Compression` を明示的に読み込むよう修正し、Windows x64 / Rust 1.98 のローカル実行で PowerShell 7 と Windows PowerShell 5.1 のそれぞれ 74 件が成功しました。実際の release バイナリの ZIP 作成・配置・実行・SHA-256 の一致も含みます。fmt / Clippy / release ビルド、リリース処理 19 テスト、単体・共通・runner 診断の計 42 テストも成功しました。ユーザー PATH の保存は模擬処理で検証しています。既存のサービスが稼働しているため、daemon を使う E2E / OS 連携の再実行は CI で確認します。
 
+インストーラーは、配置先が明示されていなければ PATH 内の既存 CLI、次に既存 Cargo 配置先を優先して更新します。macOS arm64 のインストーラー検証 45 項目で、旧 CLI が PATH の先頭にある状態で更新後のコマンドが新版になること、PATH にない CARGO_HOME の検出、明示した配置先の優先、実際のバイナリを使った自動起動定義の参照先の維持を確認しました。macOS の PowerShell 7.6.6 でも Windows 用共通処理 76 項目が成功しました。
+
+Windows のユーザー PATH はレジストリから DoNotExpandEnvironmentNames で読み、REG_SZ / REG_EXPAND_SZ の種類を保持して書き戻す方式にしました。実ユーザーの Environment を変更せず、HKCU の専用テストキーで未展開値・種類の保持、変数変更への追従、重複防止、新規値の作成を検証する処理を Windows CI に追加しています。
+
 `scripts/restart-policy-smoke.py` は release バイナリの標準 on-failure を実時間で検証しました。起動間の待機は約 1.05 / 2.06 / 4.06 / 8.06 / 16.07 秒、その後は約 30.06 秒で、10 回の再起動後に `failed` / `restart-limit`、PID なし、最後の終了コード 7 になりました。別サービスを 61 秒稼働させ、次の待機が約 1.07 秒に戻ることと、手動停止後に起動しないことも確認しています。
 
 Windows の release バイナリでも同じ実時間検証が成功しました。待機は約 1.13 / 2.13 / 4.14 / 8.13 / 16.14 秒、その後は約 30 秒で、10 回の再起動制限を確認しました。61 秒の安定稼働後の待機は約 1.11 秒に戻り、手動停止後に再起動しないことも確認しました。

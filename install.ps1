@@ -15,12 +15,70 @@ function Get-SvcnestWindowsTarget {
     return 'x86_64-pc-windows-msvc'
 }
 
+function Open-SvcnestUserEnvironment([switch]$Writable) {
+    if ($Writable) { return [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment') }
+    return [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')
+}
+
 function Get-SvcnestUserPath {
-    return [Environment]::GetEnvironmentVariable('Path', 'User')
+    $key = Open-SvcnestUserEnvironment
+    if (-not $key) { return $null }
+    try {
+        return $key.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+    } finally { $key.Dispose() }
+}
+
+function Send-SvcnestEnvironmentChange {
+    if (-not ('Svcnest.Installer.EnvironmentNotification' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace Svcnest.Installer {
+    public static class EnvironmentNotification {
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr SendMessageTimeout(IntPtr window, uint message,
+            UIntPtr wParam, string lParam, uint flags, uint timeout, out UIntPtr result);
+        public static void Send() {
+            UIntPtr result;
+            SendMessageTimeout(new IntPtr(0xffff), 0x001a, UIntPtr.Zero,
+                "Environment", 2, 1000, out result);
+        }
+    }
+}
+'@
+    }
+    [Svcnest.Installer.EnvironmentNotification]::Send()
 }
 
 function Set-SvcnestUserPath([string]$Value) {
-    [Environment]::SetEnvironmentVariable('Path', $Value, 'User')
+    $key = Open-SvcnestUserEnvironment -Writable
+    try {
+        $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+        if ($key.GetValueNames() -contains 'Path') { $kind = $key.GetValueKind('Path') }
+        # 既存の変数参照と REG_SZ / REG_EXPAND_SZ の種類をそのまま保持する。
+        $key.SetValue('Path', $Value, $kind)
+    } finally { $key.Dispose() }
+    Send-SvcnestEnvironmentChange
+}
+
+function Find-SvcnestExecutable {
+    $command = Get-Command svcnest.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($command) { return $command.Path }
+    $cargo = $env:CARGO_HOME
+    if (-not $cargo) { $cargo = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.cargo' }
+    $candidate = Join-Path $cargo 'bin\svcnest.exe'
+    if ([IO.File]::Exists($candidate)) { return $candidate }
+    return $null
+}
+
+function Resolve-SvcnestInstallDirectory([string]$Requested) {
+    if (-not $Requested) {
+        # 自動起動が参照する既存 CLI の配置先を維持する。
+        $existing = Find-SvcnestExecutable
+        if ($existing) { $Requested = [IO.Path]::GetDirectoryName($existing) }
+        else { $Requested = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs\svcnest' }
+    }
+    return [IO.Path]::GetFullPath($Requested)
 }
 
 function Add-SvcnestPath([string]$ExistingPath, [string]$Directory) {
@@ -102,10 +160,7 @@ function Install-Svcnest {
     )
     $ErrorActionPreference = 'Stop'
     $target = Get-SvcnestWindowsTarget
-    if (-not $InstallDir) {
-        $InstallDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs\svcnest'
-    }
-    $InstallDir = [IO.Path]::GetFullPath($InstallDir)
+    $InstallDir = Resolve-SvcnestInstallDirectory $InstallDir
     if (-not $NoModifyPath -and $InstallDir -match '[;\r\n]') {
         throw 'PATH に追加できない配置先です。-NoModifyPath を指定できます。'
     }
