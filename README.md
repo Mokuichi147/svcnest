@@ -6,9 +6,11 @@
 
 ## インストールと基本操作
 
-Rust stable（1.89 以上）でビルドできます。
+Rust stable（1.89 以上）が必要です。リポジトリを取得し、そのディレクトリでインストールします。
 
 ```bash
+git clone https://github.com/Mokuichi147/svcnest.git
+cd svcnest
 cargo install --path . --locked
 
 cd ~/projects/api
@@ -24,8 +26,6 @@ svcnest run
 ```
 
 登録時にカレントディレクトリを正規化し、実行ファイルを PATH から絶対パスへ解決します。`./target/release/myproject` のような入力はサービスの working directory を基準に解決します。表示用の元のコマンドと、実行用の絶対パスを分けて保存します。
-
-Windows のコンソール出力では、ドライブパスの正規化で付く `\\?\` 接頭辞を除いて表示します。共有フォルダーは `\\server\share\...` 形式で表示します。`config show` のパス項目にも適用し、保存済み設定と `status --json` / `list --json` のパスは実行用の正規化形式を保持します。
 
 引数は argv 配列として実行します。パイプやリダイレクトが必要な場合は、`sh -lc '...'`、`powershell -Command '...'` などを明示的に登録してください。Windows の標準 npm / npx / Node.js 用ランチャーは、参照先の Node.js と JavaScript を絶対パスへ解決するため、`svcnest add mcp -- npx some-mcp-server` と登録できます。これらのランチャーは Node.js を直接起動します。
 
@@ -112,8 +112,6 @@ svcnest add api \
 
 登録時に自動保存する環境変数は PATH と、`.ps1` の場合のシェル用 `PSModulePath` / `PSExecutionPolicyPreference` です。それ以外は明示した `--env` の値と env-file のパスを保存します。env-file の値は起動のたびに読み込み、設定ファイルへコピーしません。優先順位は `--env`、env-file、保存したシェル環境、親プロセスの環境の順で、登録した PATH は env-file より優先します。
 
-設定はサービスごとに TOML として保存し、一時ファイルの同期と atomic rename で更新します。Windows の予約ファイル名にも対応するため、ファイル名には `svc-` 接頭辞を付けます。Node.js ランチャーでは `resolved_executable` に Node.js、`resolved_script` に JavaScript の絶対パスを保存し、表示用 `command` は元の入力を保ちます。PowerShell スクリプトでは同じフィールドにシェルと `.ps1` の絶対パスを保存し、`interpreter_args` に起動オプション、`interpreter_environment` にシェル用の環境変数を保存します。これらのフィールドがない従来の設定も読み込めます。
-
 ## 再起動とログ
 
 再起動ポリシーは `never`、`on-failure`（標準）、`always`。異常終了後の待機時間は 1、2、4、8、16、30 秒、その後は 30 秒です。60 秒以上の安定稼働で待機時間をリセットし、5 分間の再起動数を 10 回に制限します。上限到達時は `failed` / `restart-limit` になります。手動停止、手動再起動、daemon 停止では再起動を予約しません。
@@ -136,15 +134,15 @@ svcnest add api \
 
 `--home <directory>` または `SVCNEST_HOME` で保存先を変更できます。daemon は保存先にかかわらず一人のユーザーにつき一つです。保存先を切り替えるときは、それまでの保存先の daemon を先に停止してください。OS 登録には起動した実行ファイルの絶対パスを使用するため、通常利用では `cargo install` などで固定した場所へインストールしてください。登録ファイルが残っていても OS 側の登録がなくなっていた場合は、`enable` / `daemon install` で復元します。
 
-Unix の IPC は所有者専用のディレクトリ内にある Unix Domain Socket、Windows は現在のユーザーだけを許可する DACL を持つ Named Pipe です。ネットワークポートは開きません。daemon のロックとサービスごとのロックにより二重起動を防ぎます。daemon との制御パイプが閉じると runner は対象ツリーを停止し、停止完了までサービスのロックを保持します。
+daemon が異常終了した場合は、サービスの子・孫プロセスも停止します。
 
 ### macOS / Linux / Windows での常駐中の更新
 
-macOS、Linux、Windows の daemon と runner は、保存先の `bin/<SHA-256>/svcnest`（Windows は `svcnest.exe`）に配置したコピーから動きます。ハッシュは実行ファイルの内容から計算するため、同じバージョン番号で再ビルドしても別のコピーになります。常駐中のコピーを上書きせず、通常どおり `cargo install --path . --locked` でインストール先を更新できます。Unix のコピーは実行権限を持ちます。
+daemon とサービスを動かしたまま、リポジトリのディレクトリで `cargo install --path . --locked` を実行して更新できます。
 
-更新中も既存 daemon とサービスは同じ PID で動き続けます。新しい daemon は次回起動時に使います。LaunchAgent、systemd user unit、Task Scheduler はコピー側の起動役を実行し、その都度インストール先から現在のビルドを選ぶため、更新のたびに自動起動を登録し直す必要はありません。更新後の `enable` / `daemon install` も稼働中の daemon とサービスを維持します。実行中や OS 登録で参照中のコピーを残すため、古いコピーは自動削除しません。
+稼働中の daemon とサービスは更新前のバイナリで動き続け、新しい daemon は次回起動時に使います。更新のたびに自動起動を登録し直す必要はありません。
 
-この方式を導入する前の daemon から移行する初回は、daemon を停止してから更新します。
+新しい daemon をすぐに使う場合は、daemon とサービスを一度停止してから更新します。旧ビルドからの移行も含め、次の手順をリポジトリのディレクトリで実行してください。
 
 ```sh
 svcnest daemon stop
@@ -152,7 +150,7 @@ cargo install --path . --locked
 svcnest daemon install
 ```
 
-`daemon install` は自動起動を登録して daemon を開始します。稼働中 daemon への変更の即時適用には daemon の再起動が必要です。Windows ではインストール先の CLI で `run` や `logs -f` を実行中の場合、その長時間の CLI コマンドも更新先の exe を使用するため、更新前に終了してください。
+`daemon install` は自動起動を登録して daemon を開始します。Windows ではインストール先の CLI で `run` や `logs -f` を実行中の場合、その長時間の CLI コマンドも更新先の exe を使用するため、更新前に終了してください。
 
 `status --json` と `list --json` は同じ v1 スキーマを使用します。定義は [schema/status-v1.json](schema/status-v1.json)、設計は [docs/architecture.md](docs/architecture.md) を参照してください。
 
@@ -161,9 +159,13 @@ svcnest daemon install
 ```bash
 cargo fmt --all --check
 cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked --all-targets -- --test-threads=3
 cargo build --locked --release
 ```
+
+テストは CI と同じ並列数で実行します。
+
+- macOS / Linux: `cargo test --locked --all-targets -- --test-threads=3`
+- Windows: `cargo test --locked --all-targets -- --test-threads=1`
 
 `cargo test` は一時ディレクトリと専用の daemon を使用し、自動起動の実機設定を変更しません。実際の子・孫プロセス、同時起動、daemon の強制終了、foreground 実行、再起動バックオフを検証します。CI は macOS arm64 / Intel、Windows x64、Ubuntu x86_64 / arm64 で同じ確認を実行します。runner のラベルは [GitHub の公式一覧](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) に基づいています。
 
