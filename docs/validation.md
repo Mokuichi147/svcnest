@@ -43,6 +43,14 @@ macOS もビルド別コピーから常駐する方式に対応しました。ma
 
 `scripts/terminal-background-smoke.py` では実際の擬似端末から add / start を実行し、その端末セッションを切断した後も background サービスが同じ PID で稼働することを確認しました。
 
+`install.sh` の追加と PATH の自動設定対応後、macOS arm64 で `sh -n install.sh`、release ビルド、`python3 scripts/check-installer.py --binary target/release/svcnest` が成功しました。通信をローカル資材に置き換えた 40 件の検証で、4 OS / CPU 構成の選択、標準入力からのスクリプト実行、空白を含む配置先、バージョン指定、開いている旧ファイルを保持した更新、取得・SHA-256・実行確認の失敗時に既存バイナリを保持すること、実際の Mach-O の梱包・配置・実行を確認しています。専用の一時設定を使い、sh / bash / zsh で設定の読み込み、引用符・展開文字を含むパスの保持、追記の重複防止、PATH の重複防止、既存 PATH と自動設定無効化時の非編集も確認しました。zsh は新しい対話シェルからコマンドを解決できました。fish の設定生成と重複防止は成功していますが、fish 自体の実行は未検証です。リリース workflow の YAML とシェルの構文確認も成功しました。Linux の musl ビルド、Windows のネイティブバイナリのリリース用ビルド、GitHub Releases への実際の公開は未検証で、タグ push 時の workflow で確認します。
+
+タグ push 時の自動公開について、`python3 scripts/check-release.py` の 14 テストが macOS arm64 で成功しました。一時 Git リポジトリと模擬 GitHub の応答を使い、タグ・manifest・lock・checkout の一致、前回の公開版からの直接コミットを含む差分、初回と prerelease の比較、draft・存在しないタグ・別履歴の除外、5 種類の tar.gz / zip のファイル構成と SHA-256、配布物の不足・破損時の公開禁止、アップロード後の公開、失敗した draft の再実行、公開済みリリースの保持、過去の安定版の修正による Latest の維持を確認しています。梱包の単体検証はサンプルのファイル内容を使用し、実際の Mach-O の梱包・配置はインストーラー検証で確認しています。GitHub への書き込みは行っていません。
+
+Windows 用の `install.ps1` を追加し、macOS arm64 上の一時的な PowerShell 7.6.6 で共通処理の 70 項目を検証しました。Windows の判定、取得処理、バイナリのバージョン表示、ユーザー PATH の保存は模擬処理に置き換え、実ユーザーのレジストリを変更していません。SHA-256、更新、開いている旧ファイルの保持、取得・検証失敗時の既存ファイル保持、一時ファイルの削除、PATH の保持・重複防止、Invoke-Expression と引数付き ScriptBlock の起動を確認しています。実際の HTTPS とリダイレクトの取得も Microsoft の公開ページを使って成功しました。両方の `.ps1` は Windows PowerShell 5.1 で読み込める UTF-8 BOM 付きです。Windows のネイティブ PE の配置と実行は、CI に PowerShell 7 / Windows PowerShell 5.1 の検証を追加しましたが、実機での実行は未確認です。
+
+リリースから既存 `ci.yml` を `workflow_call` で呼び出し、配布用ビルドは `validate` と `ci`、公開は `ci` と `build` を依存先にしました。5 環境の CI がすべて成功することを要求する依存関係と YAML / シェル / PowerShell の構文をローカルで確認しました。タグ push 時は通常 CI の二重起動を避け、リリースから同じコミットの CI 全項目を呼び出します。GitHub 上での実際の全 CI と公開の実行は未確認です。
+
 `scripts/restart-policy-smoke.py` は release バイナリの標準 on-failure を実時間で検証しました。起動間の待機は約 1.05 / 2.06 / 4.06 / 8.06 / 16.07 秒、その後は約 30.06 秒で、10 回の再起動後に `failed` / `restart-limit`、PID なし、最後の終了コード 7 になりました。別サービスを 61 秒稼働させ、次の待機が約 1.07 秒に戻ることと、手動停止後に起動しないことも確認しています。
 
 Windows の release バイナリでも同じ実時間検証が成功しました。待機は約 1.13 / 2.13 / 4.14 / 8.13 / 16.14 秒、その後は約 30 秒で、10 回の再起動制限を確認しました。61 秒の安定稼働後の待機は約 1.11 秒に戻り、手動停止後に再起動しないことも確認しました。

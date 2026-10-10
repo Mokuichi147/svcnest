@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
@@ -37,6 +38,8 @@ jobs:
         with:
           version: '0.12.10'
           enable-cache: false
+      - name: Release tooling validation
+        run: python scripts/check-release.py
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
@@ -49,6 +52,16 @@ jobs:
           cargo test --locked --all-targets -- --test-threads="$threads"
       - name: Release build
         run: cargo build --locked --release
+      - name: Installer validation
+        if: runner.os != 'Windows'
+        run: python scripts/check-installer.py --binary target/release/svcnest
+      - name: Windows installer validation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./scripts/check-windows-installer.ps1 -Binary target/release/svcnest.exe
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/check-windows-installer.ps1 -Binary target/release/svcnest.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell のインストーラー検証に失敗しました' }
       - name: JSON Schema validation
         shell: bash
         run: |

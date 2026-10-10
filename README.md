@@ -6,13 +6,57 @@
 
 ## インストールと基本操作
 
-Rust stable（1.89 以上）が必要です。リポジトリを取得し、そのディレクトリでインストールします。
+macOS / Linux では、公開済みの最新安定版を次のコマンドでインストールできます。Rust と管理者権限は不要です。
 
-```bash
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/Mokuichi147/svcnest/main/install.sh | sh
+```
+
+OS と CPU（arm64 / x86_64）を自動判定し、GitHub Releases のバイナリを SHA-256 で検証して `~/.local/bin/svcnest` に配置します。PATH に配置先がない場合は、使用しているシェルの起動設定へ自動追加します。手動編集は不要で、インストール後に新しいターミナルを開くと `svcnest` を使えます。すでに PATH に含まれる場合は設定を変更せず、再インストールでも同じ設定を重複して追加しません。
+
+zsh は `${ZDOTDIR:-$HOME}/.zshrc`、bash は読み込まれるログイン設定（`.bash_profile` / `.bash_login` / `.profile`）と `.bashrc`、fish は `${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish`、sh は `.profile` を設定します。設定ファイルを指定する場合は `SVCNEST_PROFILE`、自動設定を無効にする場合は `--no-modify-path` を指定できます。
+
+Linux 版は musl を使った静的リンクです。自動起動には systemd のユーザーセッションが必要です。
+
+バージョンや配置先を指定する場合は、`sh -s --` に引数を渡せます。配置先は `SVCNEST_INSTALL_DIR` 環境変数でも指定できます。
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/Mokuichi147/svcnest/main/install.sh \
+  | sh -s -- --version 1.0.0 --install-dir "$HOME/.local/bin"
+```
+
+更新も同じコマンドで行います。以前 `cargo install` を使用していた場合は `--install-dir "$HOME/.cargo/bin"` を指定して、daemon の登録済みパスを保ってください。取得・検証・実行確認に失敗した場合は、既存のバイナリを保持します。
+
+常駐中の更新については、後述の「macOS / Linux / Windows での常駐中の更新」を参照してください。
+
+Windows x64 では、Windows PowerShell 5.1 または PowerShell 7 で次のコマンドを実行します。Rust と管理者権限は不要です。
+
+```powershell
+irm https://raw.githubusercontent.com/Mokuichi147/svcnest/main/install.ps1 | iex
+```
+
+公開済みの最新安定版の ZIP と SHA-256 を取得・検証し、`%LOCALAPPDATA%\Programs\svcnest\svcnest.exe` へ配置します。ユーザー PATH と実行中の PowerShell の PATH へ重複なく自動追加するため、そのまま `svcnest --version` を実行できます。更新も同じコマンドです。`run` / `logs -f` など、インストール先の exe を使う長時間の CLI は更新前に終了してください。
+
+バージョンや配置先を指定する場合は、取得したスクリプトに引数を渡します。配置先は `SVCNEST_INSTALL_DIR`、PATH の自動設定の無効化は `-NoModifyPath` でも指定できます。
+
+```powershell
+$installer = irm https://raw.githubusercontent.com/Mokuichi147/svcnest/main/install.ps1
+& ([scriptblock]::Create($installer)) -Version 1.0.0 -InstallDir "$env:LOCALAPPDATA\Programs\svcnest"
+```
+
+手動で配置する場合は、[GitHub Releases](https://github.com/Mokuichi147/svcnest/releases) の `svcnest-x86_64-pc-windows-msvc.zip` を使えます。
+
+ソースからビルドする場合は、Rust stable（1.89 以上）が必要です。リポジトリを取得し、そのディレクトリでインストールします。
+
+```sh
 git clone https://github.com/Mokuichi147/svcnest.git
 cd svcnest
 cargo install --path . --locked
+```
 
+インストール後は、プロジェクトのディレクトリから使います。
+
+```bash
 cd ~/projects/api
 svcnest add api -- uv run main.py --port 8000
 svcnest enable --now
@@ -132,13 +176,13 @@ svcnest add api \
 | Linux | `systemd --user` | `$XDG_CONFIG_HOME/svcnest/` または `~/.config/svcnest/` |
 | Windows | 現在のユーザーのログオン時に動く Task Scheduler | `%LOCALAPPDATA%\svcnest\` |
 
-`--home <directory>` または `SVCNEST_HOME` で保存先を変更できます。daemon は保存先にかかわらず一人のユーザーにつき一つです。保存先を切り替えるときは、それまでの保存先の daemon を先に停止してください。OS 登録には起動した実行ファイルの絶対パスを使用するため、通常利用では `cargo install` などで固定した場所へインストールしてください。登録ファイルが残っていても OS 側の登録がなくなっていた場合は、`enable` / `daemon install` で復元します。
+`--home <directory>` または `SVCNEST_HOME` で保存先を変更できます。daemon は保存先にかかわらず一人のユーザーにつき一つです。保存先を切り替えるときは、それまでの保存先の daemon を先に停止してください。OS 登録には起動した実行ファイルの絶対パスを使用するため、通常利用ではインストーラーや `cargo install` で固定した場所へインストールしてください。登録ファイルが残っていても OS 側の登録がなくなっていた場合は、`enable` / `daemon install` で復元します。
 
 daemon が異常終了した場合は、サービスの子・孫プロセスも停止します。
 
 ### macOS / Linux / Windows での常駐中の更新
 
-daemon とサービスを動かしたまま、リポジトリのディレクトリで `cargo install --path . --locked` を実行して更新できます。
+daemon とサービスを動かしたまま、同じ配置先へインストーラーを再実行して更新できます。ソースからビルドする場合は、リポジトリのディレクトリで `cargo install --path . --locked` を実行します。
 
 稼働中の daemon とサービスは更新前のバイナリで動き続け、新しい daemon は次回起動時に使います。更新のたびに自動起動を登録し直す必要はありません。
 
@@ -156,16 +200,57 @@ svcnest daemon install
 
 ## 開発と検証
 
+### リリースの公開
+
+公開対象のコミットで `Cargo.toml` / `Cargo.lock` のバージョンを揃え、同じバージョンの `v<version>` タグを push すると、GitHub Actions がそのコミットをビルドして GitHub Releases へ公開します。例えば 1.0.0 の公開は次の操作です。
+
+```sh
+git tag -a v1.0.0 -m 'v1.0.0 を公開'
+git push origin v1.0.0
+```
+
+タグを付けるコミットには `.github/workflows/release.yml` とリリース用スクリプトを含めてください。README のインストールコマンドは `main/install.sh` / `main/install.ps1` を取得するため、初回公開時は両方のインストーラーも `main` へ反映します。
+
+リリースノートには、前回の公開リリースから追加されたコミットの件名・リンクと、差分全体へのリンクを載せます。PR を使わずに直接コミットした変更も含みます。安定版は同じ履歴上の直前の安定版、prerelease は直前の公開版（prerelease を含む）と比較します。初回は全コミットの一覧を載せます。
+
+配布対象は [.github/release-targets.json](.github/release-targets.json) で定義し、ビルド、梱包、公開前の検証、リリースノートのダウンロード一覧で共有します。
+
+| 環境 | 配布物 |
+|---|---|
+| macOS arm64 | `svcnest-aarch64-apple-darwin.tar.gz` |
+| macOS Intel | `svcnest-x86_64-apple-darwin.tar.gz` |
+| Linux x86_64 | `svcnest-x86_64-unknown-linux-musl.tar.gz` |
+| Linux arm64 | `svcnest-aarch64-unknown-linux-musl.tar.gz` |
+| Windows x64 | `svcnest-x86_64-pc-windows-msvc.zip` |
+
+各アーカイブには実行ファイルと LICENSE を含めます。個別の `.sha256` と全配布物の `SHA256SUMS` も添付します。リリースは、タグのコミットにある `ci.yml` を `workflow_call` で呼び出し、5 環境の CI 全項目（fmt、Clippy、全テスト、JSON Schema、再起動・端末切断、OS 連携、常駐中更新、インストーラー検証など）が成功することを必須にしています。その後に配布用ビルドと検証を実行し、全配布物の存在と SHA-256 を確認してから draft を作成し、アップロードが完了してから公開します。CI・ビルド・配布物の検証が失敗・キャンセルした場合は公開しません。途中のアップロード失敗は draft のまま残り、Actions を再実行できます。公開済みのリリースは上書きしません。
+
+複数のタグのビルドは並列に進め、公開処理は [GitHub Actions の `queue: max`](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency) を使って順番に処理します。
+
+`v1.1.0-rc.1` のようなタグは prerelease とし、引数なしのインストーラーは安定版を取得します。過去の安定版向けの修正版を公開しても、それより新しい安定版の Latest は維持します。初回リリースの公開までは、上記のインストールコマンドからバイナリを取得できません。
+
+### ローカルでの確認
+
 ```bash
 cargo fmt --all --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo build --locked --release
+python3 scripts/check-release.py
 ```
 
 テストは CI と同じ並列数で実行します。
 
 - macOS / Linux: `cargo test --locked --all-targets -- --test-threads=3`
 - Windows: `cargo test --locked --all-targets -- --test-threads=1`
+
+インストーラーの検証は macOS / Linux で実行します。通信を一時ディレクトリ内のリリース資材に置き換え、OS / CPU の選択、パイプからの実行、更新、検証失敗時の既存バイナリの保持、実際の release バイナリの配置と、PATH の自動設定・重複防止を確認します。シェル設定の検証も専用の一時ファイルを使用します。
+
+```sh
+sh -n install.sh
+python3 scripts/check-installer.py --binary target/release/svcnest
+```
+
+Windows のインストーラーは、PowerShell で `./scripts/check-windows-installer.ps1 -Binary target/release/svcnest.exe` を実行して検証します。通信とユーザー PATH の保存を模擬処理に置き換え、実ユーザーのレジストリを変更せずに検証します。Windows CI では PowerShell 7 と Windows PowerShell 5.1 の両方で実行します。
 
 `cargo test` は一時ディレクトリと専用の daemon を使用し、自動起動の実機設定を変更しません。実際の子・孫プロセス、同時起動、daemon の強制終了、foreground 実行、再起動バックオフを検証します。CI は macOS arm64 / Intel、Windows x64、Ubuntu x86_64 / arm64 で同じ確認を実行します。runner のラベルは [GitHub の公式一覧](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) に基づいています。
 
