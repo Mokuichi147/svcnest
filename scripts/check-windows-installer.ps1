@@ -3,7 +3,8 @@ param([string]$Binary)
 
 $ErrorActionPreference = 'Stop'
 $source = Split-Path $PSScriptRoot -Parent
-. (Join-Path $source 'install.ps1')
+# irm と同じく UTF-8 の文字列として読み込む。BOM のない日本語を Windows PowerShell 5.1 が ANSI として読むのを避ける。
+. ([scriptblock]::Create([IO.File]::ReadAllText((Join-Path $source 'install.ps1'), [Text.Encoding]::UTF8)))
 # Windows PowerShell 5.1 では ZipArchiveMode の定義元も明示的に読み込む。
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -126,7 +127,7 @@ try {
     if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT -and $node) {
         # 実行中の exe は上書き・削除できないため、単体で動く node.exe を配置先で常駐させて更新する。
         [IO.File]::Copy($node.Path, $destination, $true)
-        $running = Start-Process -FilePath $destination -ArgumentList '-e', 'setTimeout(() => {}, 120000)' -PassThru -WindowStyle Hidden
+        $running = Start-Process -FilePath $destination -ArgumentList '-e', 'setTimeout(()=>{},120000)' -PassThru -WindowStyle Hidden
         try {
             Start-Sleep -Milliseconds 500
             Assert-Installer (-not $running.HasExited) '更新前の exe を常駐できません。'
@@ -297,9 +298,10 @@ try {
     }
 
     # Invoke-Expression に渡した場合にも最後の処理が一度だけ開始することを確認する。
-    # irm が BOM を文字として残した場合も起動できるよう、BOM を除去せずに読み込む。
+    # irm は BOM を文字として残し、BOM 付きの文字列は Invoke-Expression で構文エラーになる。
+    # irm と同じくバイト列をそのまま文字列にして、BOM がないことも確認する。
     $bootstrap = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes((Join-Path $source 'install.ps1')))
-    Assert-Installer ($bootstrap[0] -eq [char]0xFEFF) 'BOM を残した Invoke-Expression の検証になっていません。'
+    Assert-Installer ($bootstrap[0] -ne [char]0xFEFF) 'install.ps1 に BOM があるため、irm | iex で実行できません。'
     $tokens = $null
     $parseErrors = $null
     $syntax = [Management.Automation.Language.Parser]::ParseInput($bootstrap, [ref]$tokens, [ref]$parseErrors)

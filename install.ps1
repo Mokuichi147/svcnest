@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [string]$Version = 'latest',
     [string]$InstallDir = $env:SVCNEST_INSTALL_DIR,
