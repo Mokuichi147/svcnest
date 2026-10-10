@@ -45,6 +45,17 @@ svcnest add worker7 --shell pwsh -- .\start.ps1
 
 スクリプトの絶対パスと、PowerShell の実行ファイル・起動オプションを保存するため、起動時のカレントディレクトリや daemon の PATH には依存しません。PowerShell は [`-NoLogo -NoProfile -File`](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_powershell_exe?view=powershell-5.1) で起動します。登録元と同じ PowerShell を使う場合は `PSModulePath` を保存し、セッション限定の `PSExecutionPolicyPreference` も保存します。`--env` / env-file の同名設定が優先します。別バージョンのシェルを選ぶ場合は、そのシェルの既定モジュールパスを使います。daemon のモジュールパスやセッション限定ポリシーは引き継ぎません。プロファイル、関数、セッション内の変数は再現しません。登録時はスクリプトを実行せず、起動時に指定された引数を渡します。
 
+サービス用バッチでは、対象プログラムの直後に終了コードを保存し、バッチ全体の終了コードとして返してください。後続の `pause` で終了コードが `0` に変わる場合があります。background 実行の標準入力は接続されていないため、`pause` はユーザーの入力待ちとして使えません。例えば、次のように記述します。
+
+```bat
+@echo off
+python server.py
+set "SERVICE_EXIT_CODE=%ERRORLEVEL%"
+exit /b %SERVICE_EXIT_CODE%
+```
+
+`svcnest` が監視するのはバッチ全体の終了コードです。対象がエラーになってもバッチが `0` を返すと、既定の `on-failure` では再起動しません。
+
 ## サービスの選択
 
 サービス名を指定すると、ディレクトリに関係なくそのサービスを操作します。省略すると、現在のディレクトリから親を順番に探索して、最初に一致した working directory を使います。子ディレクトリからの操作やシンボリックリンク経由の操作にも対応します。
@@ -107,7 +118,11 @@ svcnest add api \
 
 再起動ポリシーは `never`、`on-failure`（標準）、`always`。異常終了後の待機時間は 1、2、4、8、16、30 秒、その後は 30 秒です。60 秒以上の安定稼働で待機時間をリセットし、5 分間の再起動数を 10 回に制限します。上限到達時は `failed` / `restart-limit` になります。手動停止、手動再起動、daemon 停止では再起動を予約しません。
 
-ログには時刻・タイムゾーンと stdout / stderr の区別を付けます。10 MiB を目安に対象を停止せずローテーションし、現在のファイルと 4 世代の過去ログを保持します。`logs -n` は世代をまたいで末尾を表示します。
+`enabled` は daemon 起動時の自動起動を指定します。稼働中の再起動は `restart` で決まり、`enabled=yes` でも正常終了した `on-failure` のサービスは停止状態になります。`list` の `LAST EXIT` と、`status` の `Last exit` で直近の終了コードを確認できます。Unix のシグナル終了は `signal:<番号>`、終了履歴がなければ `-` を表示します。
+
+ログには時刻・タイムゾーンと stdout / stderr の区別を付けます。`svcnest` の行には起動 PID、終了コード・シグナル・稼働時間、停止理由、再起動の待機時間も記録します。10 MiB を目安に対象を停止せずローテーションし、現在のファイルと 4 世代の過去ログを保持します。`logs -n` は世代をまたいで末尾を表示します。
+
+稼働中の対象には実行時間の上限を設けません。`--stop-timeout` は停止を要求した後の待機時間で、時間のかかるバッチも終了または停止要求まで監視します。`running` はプロセスの起動を表し、HTTP などの応答準備の完了を保証しません。対象のログとヘルスチェックで準備状態を確認してください。`status` / `list` は `svcnest` が管理する実行の状態を表示し、管理外で起動した同じプログラムを自動的に取り込むことはありません。
 
 ## OS 連携と保存先
 

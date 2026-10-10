@@ -489,12 +489,12 @@ fn print_snapshot(snapshot: &Snapshot, json: bool, table: bool) -> Result<()> {
     }
     if table {
         println!(
-            "{:<20} {:<12} {:<10} {:<8} CWD",
-            "NAME", "STATUS", "PID", "ENABLED"
+            "{:<20} {:<12} {:<10} {:<8} {:<12} CWD",
+            "NAME", "STATUS", "PID", "ENABLED", "LAST EXIT"
         );
         for status in &snapshot.services {
             println!(
-                "{:<20} {:<12} {:<10} {:<8} {}",
+                "{:<20} {:<12} {:<10} {:<8} {:<12} {}",
                 status.name,
                 status.runtime.state.to_string(),
                 status
@@ -502,6 +502,7 @@ fn print_snapshot(snapshot: &Snapshot, json: bool, table: bool) -> Result<()> {
                     .pid
                     .map_or("-".to_owned(), |pid| pid.to_string()),
                 if status.enabled { "yes" } else { "no" },
+                last_exit(&status.runtime),
                 readable_path(&status.cwd).display()
             );
         }
@@ -527,6 +528,7 @@ fn print_snapshot(snapshot: &Snapshot, json: bool, table: bool) -> Result<()> {
                 uptime,
                 status.runtime.restarts
             );
+            println!("Last exit:     {}", last_exit(&status.runtime));
             if let Some(reason) = &status.runtime.reason {
                 println!("Reason:        {reason}");
             }
@@ -536,6 +538,14 @@ fn print_snapshot(snapshot: &Snapshot, json: bool, table: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn last_exit(status: &crate::ipc::RuntimeStatus) -> String {
+    match (status.last_exit_code, status.last_exit_signal) {
+        (_, Some(signal)) => format!("signal:{signal}"),
+        (Some(code), None) => code.to_string(),
+        (None, None) => "-".to_owned(),
+    }
 }
 
 pub fn display_command(command: &[String]) -> String {
