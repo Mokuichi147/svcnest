@@ -68,3 +68,5 @@ Windows の release バイナリでも同じ実時間検証が成功しました
 `scripts/native-os-smoke.py` は三つの OS のユーザー自動起動を対象に、専用の定義を一時登録し、uv の解決、子ディレクトリ、登録の修復、OS 管理からの起動、daemon のクラッシュ回復、重複防止、restart、foreground Ctrl+C を確認します。macOS、Linux、Windows の実行が成功しました。Windows では BOM 付き UTF-16LE の XML で Task Scheduler への登録・修復・起動を確認し、クラッシュ時の旧ツリー回収後に OS から再起動して enabled サービスの復旧を検証しました。foreground Ctrl+C の終了コードは 130 です。Task Scheduler の起動失敗の再試行設定を、実行中 daemon の強制終了からの自動復旧保証として扱わないことは [README.md](../README.md) に記載しています。
 
 Linux x86_64 では、内容ハッシュ別の runtime copy、systemd user unit からの起動、更新中の daemon・サービス PID 維持、更新後の `enable` / `daemon install`、停止後の新版選択、OS登録からの新版選択、クラッシュ回復を実プロセスで確認しました。systemd が監視する起動役と daemon の PID は一致し、実行中のコピーは上書きされません。
+
+2026-10-10 の PR #4 の CI（5c845c9）では、Linux x86_64 の Ctrl+C E2E が `foreground` を期待した時点で一時的な `stopping` を読み、失敗しました。子・孫の PID 記録は CLI による状態保存より先に完了する場合があるため、テストで `foreground` 状態を最大 15 秒待つよう修正しました。Ctrl+C の終了コード 130、プロセスツリーの停止、ログ follow の停止後も background が稼働することの検証は維持しています。macOS arm64 の単体・共通・runner 診断の全 39 テストと fmt / Clippy が成功しました。手元のユーザー daemon が稼働中のため、修正した E2E と全 5 環境の検証は CI で確認します。

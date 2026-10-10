@@ -1567,7 +1567,8 @@ fn ctrl_c_stops_foreground_tree_but_log_follow_does_not_stop_background_service(
         .unwrap();
     let mut foreground = ForegroundGuard(foreground);
     let pids = sandbox.wait_pids("api", 3);
-    assert_eq!(sandbox.state("api"), ServiceState::Foreground);
+    // PID の記録は foreground 状態の保存より先に完了する場合がある。
+    wait_for(|| (sandbox.state("api") == ServiceState::Foreground).then_some(()));
     sandbox.error(&["start"], "SERVICE_RUNNING");
     assert_eq!(
         unsafe { libc::kill(foreground.0.id() as i32, libc::SIGINT) },
