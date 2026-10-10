@@ -19,7 +19,8 @@ use std::{collections::BTreeMap, fs, path::PathBuf, time::Duration};
 #[command(
     name = "svcnest",
     version,
-    about = "Manage local programs from their project directory"
+    about = "Manage local programs as background services from their project directory",
+    after_help = "Examples:\n  svcnest add api -- uv run main.py --port 8000\n  svcnest enable --now\n  svcnest logs -f\n\nCommands without a service name act on the service registered in the current\ndirectory or its nearest parent."
 )]
 pub struct Cli {
     #[arg(
@@ -35,47 +36,59 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum CliCommand {
-    #[command(about = "Register a command and capture the working directory and PATH")]
+    #[command(about = "Register a command as a service of the current directory")]
     Add(AddArgs),
     #[command(about = "Start a service in the background")]
     Start(TargetArgs),
+    #[command(about = "Stop a service and all of its child processes")]
     Stop(TargetArgs),
+    #[command(about = "Stop a service, then start it again")]
     Restart(TargetArgs),
+    #[command(about = "Show the state, PID, command and uptime of a service")]
     Status(StatusArgs),
     #[command(about = "List every registered service")]
     List {
-        #[arg(long)]
+        #[arg(long, help = "Print machine-readable JSON")]
         json: bool,
     },
     #[command(about = "Run a stopped service in the foreground without restart policy")]
     Run(SingleTarget),
+    #[command(about = "Show the saved output of a service")]
     Logs(LogsArgs),
-    #[command(about = "Start a service automatically when the daemon starts")]
+    #[command(about = "Start a service automatically when the daemon starts at login")]
     Enable(ToggleArgs),
+    #[command(about = "Stop starting a service automatically")]
     Disable(ToggleArgs),
+    #[command(about = "Unregister a service")]
     Remove(RemoveArgs),
+    #[command(about = "Show the stored configuration of a service")]
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    #[command(about = "Check the daemon, OS registration and service configuration")]
     Doctor {
-        #[arg(long)]
+        #[arg(long, help = "Print machine-readable JSON")]
         json: bool,
     },
+    #[command(about = "Manage the background daemon that supervises services")]
     Daemon {
         #[command(subcommand)]
         command: DaemonCommand,
     },
     #[command(name = "__runner", hide = true)]
-    Runner {
-        name: String,
-    },
+    Runner { name: String },
 }
 
 #[derive(Args)]
 pub struct AddArgs {
+    #[arg(help = "Service name ([a-z0-9][a-z0-9._-]{0,63})")]
     pub name: String,
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "DIRECTORY",
+        help = "Working directory [default: current directory]"
+    )]
     pub cwd: Option<PathBuf>,
     #[arg(
         long,
@@ -83,27 +96,67 @@ pub struct AddArgs {
         help = "Select the PowerShell executable for a Windows .ps1 script"
     )]
     pub shell: Option<String>,
-    #[arg(long, value_enum, default_value_t = RestartPolicy::OnFailure)]
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = RestartPolicy::OnFailure,
+        value_name = "POLICY",
+        help = "When to restart the service after it exits"
+    )]
     pub restart: RestartPolicy,
-    #[arg(long, value_parser = parse_env, value_name = "KEY=VALUE")]
+    #[arg(
+        long,
+        value_parser = parse_env,
+        value_name = "KEY=VALUE",
+        help = "Set an environment variable (repeatable)"
+    )]
     pub env: Vec<(String, String)>,
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "FILE",
+        help = "Read environment variables from a file each time the service starts"
+    )]
     pub env_file: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Also start the service automatically when the daemon starts"
+    )]
     pub enable: bool,
-    #[arg(long, default_value = "")]
+    #[arg(
+        long,
+        default_value = "",
+        hide_default_value = true,
+        value_name = "TEXT",
+        help = "Description shown by status"
+    )]
     pub description: String,
-    #[arg(long, default_value = "10s", value_parser = parse_timeout)]
+    #[arg(
+        long,
+        default_value = "10s",
+        value_parser = parse_timeout,
+        value_name = "DURATION",
+        help = "Time to wait after a stop request before force-killing (1ms-300s, plain numbers are seconds)"
+    )]
     pub stop_timeout: u64,
-    #[arg(long)]
+    #[arg(long, help = "Overwrite a stopped service with the same name")]
     pub replace: bool,
-    #[arg(last = true, required = true, num_args = 1.., allow_hyphen_values = true)]
+    #[arg(
+        last = true,
+        required = true,
+        num_args = 1..,
+        allow_hyphen_values = true,
+        value_name = "COMMAND",
+        help = "Program and arguments to run"
+    )]
     pub command: Vec<String>,
 }
 
 #[derive(Args)]
 pub struct TargetArgs {
-    #[arg(conflicts_with = "all")]
+    #[arg(
+        conflicts_with = "all",
+        help = "Service name [default: the service of the current directory]"
+    )]
     pub name: Option<String>,
     #[arg(long, help = "Select all services at the nearest registered directory")]
     pub all: bool,
@@ -127,63 +180,83 @@ impl TargetArgs {
 
 #[derive(Args)]
 pub struct SingleTarget {
+    #[arg(help = "Service name [default: the service of the current directory]")]
     pub name: Option<String>,
 }
 #[derive(Args)]
 pub struct StatusArgs {
     #[command(flatten)]
     pub target: TargetArgs,
-    #[arg(long)]
+    #[arg(long, help = "Print machine-readable JSON")]
     pub json: bool,
 }
 #[derive(Args)]
 pub struct ToggleArgs {
     #[command(flatten)]
     pub target: TargetArgs,
-    #[arg(long)]
+    #[arg(long, help = "Also start (enable) or stop (disable) the service now")]
     pub now: bool,
 }
 #[derive(Args)]
 pub struct LogsArgs {
+    #[arg(help = "Service name [default: the service of the current directory]")]
     pub name: Option<String>,
-    #[arg(short = 'n', long = "lines", default_value_t = 100)]
+    #[arg(
+        short = 'n',
+        long = "lines",
+        default_value_t = 100,
+        help = "Number of lines to show from the end"
+    )]
     pub lines: usize,
-    #[arg(short, long)]
+    #[arg(
+        short,
+        long,
+        help = "Keep printing new output (Ctrl+C does not stop the service)"
+    )]
     pub follow: bool,
 }
 #[derive(Args)]
 pub struct RemoveArgs {
     #[command(flatten)]
     pub target: TargetArgs,
-    #[arg(long)]
+    #[arg(long, help = "Stop the service first if it is running")]
     pub stop: bool,
-    #[arg(long)]
+    #[arg(long, help = "Also delete the saved logs")]
     pub purge: bool,
 }
 
 #[derive(Subcommand)]
 pub enum ConfigCommand {
+    #[command(about = "Print the stored configuration")]
     Show {
+        #[arg(help = "Service name [default: the service of the current directory]")]
         name: Option<String>,
         #[arg(long, help = "Show stored environment values without masking")]
         show_secrets: bool,
     },
+    #[command(about = "Print the path of the configuration file")]
     Path {
+        #[arg(help = "Service name [default: the service of the current directory]")]
         name: Option<String>,
     },
 }
 
 #[derive(Subcommand)]
 pub enum DaemonCommand {
+    #[command(about = "Register the daemon to start at login, then start it")]
     Install {
         #[arg(long, help = "Print the OS registration without installing it")]
         dry_run: bool,
     },
+    #[command(about = "Stop the daemon and remove its login registration")]
     Uninstall,
+    #[command(about = "Start the daemon if it is not running")]
     Start,
+    #[command(about = "Stop the daemon and every running service")]
     Stop,
+    #[command(about = "Show whether the daemon is running and registered")]
     Status {
-        #[arg(long)]
+        #[arg(long, help = "Print machine-readable JSON")]
         json: bool,
     },
     #[command(about = "Serve local IPC (used by the OS service manager)")]
