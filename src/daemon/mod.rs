@@ -108,7 +108,8 @@ impl RunnerHandle {
     }
 
     async fn wait_started(&mut self) -> Result<()> {
-        tokio::time::timeout(self.stop_timeout + Duration::from_secs(15), async {
+        // 旧 runner の停止待ちと、ログインシェルからの環境取得を含める。
+        tokio::time::timeout(self.stop_timeout + Duration::from_secs(25), async {
             loop {
                 let status = self.status.borrow().clone();
                 match status.state {

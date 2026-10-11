@@ -504,6 +504,8 @@ fn windows_running_copy_allows_installation_updates_without_stopping_its_tree() 
         enabled: false,
         restart: config::RestartPolicy::Never,
         stop_timeout_ms: 2000,
+        shell_env: false,
+        shell: None,
         env_file: None,
         environment: [
             ("SVCNEST_E2E_MODE".into(), "console".into()),
@@ -985,17 +987,6 @@ fn windows_batches_register_directly_and_keep_literal_arguments_in_both_run_mode
         assert!(logs.contains(&serde_json::to_string(&arguments).unwrap()));
         assert!(!sandbox.project.join("injected.txt").exists());
     }
-    sandbox.error(
-        &[
-            "add",
-            "invalid",
-            "--shell",
-            "pwsh",
-            "--",
-            ".\\start script.bat",
-        ],
-        "INVALID_SHELL",
-    );
 }
 
 #[cfg(windows)]
@@ -1114,19 +1105,10 @@ fn windows_ps1_uses_the_registering_powershell_and_pins_its_environment() {
         assert!(!sandbox.project.join("injected.txt").exists());
     }
     assert!(tested > 0, "Windows PowerShell is required for this test");
-    let shell = svcnest::resolve::executable::resolve(
-        "powershell.exe",
-        &sandbox.project,
-        std::env::var_os("PATH").as_deref(),
-        None,
-    )
-    .unwrap();
     let literal_arguments = ["", "\"quoted\"", "trailing\\", "-flag", "first\r\nsecond"];
     let mut registration = vec![
         "add",
-        "explicit",
-        "--shell",
-        shell.to_str().unwrap(),
+        "literal",
         "--env",
         "PSExecutionPolicyPreference=RemoteSigned",
         "--",
@@ -1134,20 +1116,10 @@ fn windows_ps1_uses_the_registering_powershell_and_pins_its_environment() {
     ];
     registration.extend(literal_arguments);
     sandbox.ok(&registration);
-    assert_eq!(
-        config::load_named(&sandbox.paths, "explicit")
-            .unwrap()
-            .resolved_executable,
-        shell
-    );
     let result: serde_json::Value =
-        serde_json::from_str(sandbox.ok(&["run", "explicit"]).trim()).unwrap();
+        serde_json::from_str(sandbox.ok(&["run", "literal"]).trim()).unwrap();
     assert_eq!(result["policy"], "RemoteSigned");
     assert_eq!(result["argv"], serde_json::json!(literal_arguments));
-    sandbox.error(
-        &["add", "invalid", "--shell", "cmd.exe", "--", input],
-        "INVALID_SHELL",
-    );
 }
 
 #[cfg(windows)]
@@ -1644,6 +1616,8 @@ fn console_paths_are_readable_while_stored_and_json_paths_remain_canonical() {
         enabled: false,
         restart: config::RestartPolicy::Never,
         stop_timeout_ms: 300,
+        shell_env: false,
+        shell: None,
         env_file: Some(fs::canonicalize(&env_file).unwrap()),
         environment: Default::default(),
     };

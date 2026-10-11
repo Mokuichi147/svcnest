@@ -36,7 +36,7 @@ svcnest run         # foreground で実行（Ctrl+C で終了）
 
 `--` 以降のコマンドは、登録時のディレクトリと PATH を基準に絶対パスへ解決して保存します。そのため、起動時のカレントディレクトリや daemon の PATH には依存しません。
 
-引数はシェルを介さずに渡します。パイプやリダイレクトを使う場合は `sh -lc '...'` や `powershell -Command '...'` のように明示して登録してください。
+コマンドと引数はシェルを介さずに渡します。macOS / Linux でシェルから読み込むのは環境変数だけです（[シェルの環境](#シェルの環境)）。パイプやリダイレクトを使う場合は `sh -lc '...'` や `powershell -Command '...'` のように明示して登録してください。
 
 ## サービスの選択
 
@@ -68,7 +68,7 @@ svcnest status --all
 | `remove [name] [--all] [--stop] [--purge]` | 登録を削除。起動中は `--stop` が必要。`--purge` でログも削除 |
 | `config show [name] [--show-secrets]` | 設定を表示。環境変数は PATH 以外をマスク |
 | `config path [name]` | 設定ファイルのパスを表示 |
-| `doctor [--json]` | daemon、自動起動、設定、実行ファイルなどを診断 |
+| `doctor [--json]` | daemon、自動起動、設定、実行ファイル、シェルの環境などを診断 |
 | `daemon install [--dry-run]` | daemon をログイン時の自動起動へ登録 |
 | `daemon start / stop / status / uninstall` | daemon 自体の操作 |
 
@@ -96,10 +96,40 @@ svcnest add api \
 | `--stop-timeout <time>` | 停止要求から強制終了までの待機時間。`1ms`〜`300s`、単位なしは秒 |
 | `--env KEY=VALUE` | 環境変数を保存 |
 | `--env-file <path>` | 起動のたびに読み込む env-file（値は設定へコピーしない） |
+| `--no-shell-env` | シェルの login / rc ファイルが export する環境を読み込まない（macOS / Linux） |
 | `--enable` | 登録と同時に自動起動を有効化 |
 | `--replace` | 停止中の同名サービスを上書き |
 
-サービス名は `[a-z0-9][a-z0-9._-]{0,63}` です。環境変数は `--env`、env-file、親プロセスの環境の順に優先します。登録時の PATH は自動で保存され、env-file より優先します。
+サービス名は `[a-z0-9][a-z0-9._-]{0,63}` です。環境変数は `--env`、env-file、シェルの環境、daemon の環境の順に優先します。登録時の PATH は自動で保存され、env-file やシェルの環境より優先します。
+
+### シェルの環境
+
+macOS / Linux では、端末から起動した場合と同じ環境になるよう、起動のたびにシェルの login / rc ファイルを読み込み、export された環境変数をサービスへ渡します。rc ファイルで別のファイルから読み込む秘密情報も、daemon から起動したサービスへ渡ります。値は設定へ保存せず、再起動のたびに読み直します。
+
+使用するシェルは、登録した端末で動いている対話シェル、passwd のログインシェル、`SHELL`、`/bin/sh` の順に選びます。別のシェルの環境で動かしたい場合は、そのシェルから登録するか、設定ファイル（`svcnest config path` で確認）の `shell` に絶対パスを指定します。シェルごとに次のファイルを読み込みます。
+
+| シェル | 起動方法 | 主に読み込むファイル |
+|---|---|---|
+| bash | `bash -l` から `bash -i` を実行 | `/etc/profile`、`~/.bash_profile` または `~/.profile`、`~/.bashrc` |
+| zsh | `zsh -i -l` | `.zshenv`、`.zprofile`、`.zshrc`、`.zlogin` |
+| fish | `fish -i -l` | `config.fish`、`conf.d` |
+| sh / dash / ksh など | `-i -l` | `/etc/profile`、`~/.profile`、`$ENV` |
+| csh / tcsh | `-l`（コマンドは stdin） | `.cshrc` / `.tcshrc`、`.login` |
+| PowerShell | `pwsh -Login -Command` | `/etc/profile`、`~/.profile`、`$PROFILE` |
+
+その他のシェルは `-i -l -c` で起動します。tmux や screen はシェルとして扱いません。
+
+- rc ファイルの出力は破棄し、ログへ記録しません。
+- 10 秒以内に環境を取得できない場合、またはシェルが途中で終了した場合は起動に失敗します。
+- `svcnest doctor` の `shell-env` で、使用するシェルと取得できるかを確認できます。
+- 不要な場合は `--no-shell-env` で登録するか、設定ファイルの `shell_env` を `false` にします。
+
+bash や zsh などは対話モード（`-i`）で起動するため、`[[ $- == *i* ]]` などの対話判定は真になります。入力待ちや `exec tmux` など端末を前提とする処理は、`[ -t 1 ]` で端末に接続されている場合だけ実行してください。
+
+```sh
+# ~/.zshrc
+[ -t 1 ] && [ -z "$TMUX" ] && exec tmux
+```
 
 ## 再起動とログ
 
@@ -119,13 +149,10 @@ svcnest add api \
 ```powershell
 svcnest add app -- .\start.bat
 svcnest add worker -- .\start.ps1 -Port 8000
-
-# PowerShell を明示する場合（pwsh / powershell / 実行ファイルのパス）
-svcnest add worker7 --shell pwsh -- .\start.ps1
 ```
 
 - `.bat` / `.cmd` は `cmd.exe` で起動します。
-- `.ps1` は登録元のシェルが PowerShell ならそれを使い、それ以外は `pwsh.exe`、`powershell.exe` の順に探します。プロファイルは読み込みません（`-NoProfile -File`）。
+- `.ps1` は登録元のシェルが PowerShell ならそれを使い、それ以外は登録時の PATH から `pwsh.exe`、`powershell.exe` の順に探し、見つからなければ Windows 標準の PowerShell を使います。特定の PowerShell で動かしたい場合は、その PowerShell から登録してください。プロファイルは読み込みません（`-NoProfile -File`）。
 - npm / npx などの Node.js ランチャーも `svcnest add mcp -- npx some-mcp-server` のように登録できます。
 
 svcnest はバッチ全体の終了コードで失敗を判定します。対象の終了コードをそのまま返し、`pause` は使わないでください（background では入力を受け付けず、終了コードも `0` に変わる場合があります）。

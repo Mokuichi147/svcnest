@@ -78,6 +78,9 @@ pub enum CliCommand {
     },
     #[command(name = "__runner", hide = true)]
     Runner { name: String },
+    #[cfg(unix)]
+    #[command(name = "__shell-env", hide = true)]
+    ShellEnv { nonce: String },
 }
 
 #[derive(Args)]
@@ -90,12 +93,6 @@ pub struct AddArgs {
         help = "Working directory [default: current directory]"
     )]
     pub cwd: Option<PathBuf>,
-    #[arg(
-        long,
-        value_name = "EXECUTABLE",
-        help = "Select the PowerShell executable for a Windows .ps1 script"
-    )]
-    pub shell: Option<String>,
     #[arg(
         long,
         value_enum,
@@ -117,6 +114,11 @@ pub struct AddArgs {
         help = "Read environment variables from a file each time the service starts"
     )]
     pub env_file: Option<PathBuf>,
+    #[arg(
+        long,
+        help = "Do not load the environment exported by the shell's login and rc files (macOS / Linux)"
+    )]
+    pub no_shell_env: bool,
     #[arg(
         long,
         help = "Also start the service automatically when the daemon starts"
@@ -294,11 +296,19 @@ fn parse_timeout(value: &str) -> std::result::Result<u64, String> {
 }
 
 pub async fn execute(cli: Cli) -> Result<i32> {
+    // rc が設定した SVCNEST_HOME などで保存先を作成しないよう、Paths より先に処理する。
+    #[cfg(unix)]
+    if let CliCommand::ShellEnv { nonce } = &cli.command {
+        process::shell_env::print(nonce)?;
+        return Ok(0);
+    }
     let paths = Paths::discover(cli.home)?;
     match cli.command {
         CliCommand::Runner { name } => {
             crate::runner::serve(&paths, &name).await?;
         }
+        #[cfg(unix)]
+        CliCommand::ShellEnv { .. } => unreachable!(),
         CliCommand::Daemon { command } => return daemon_command(paths, command).await,
         CliCommand::Add(args) => {
             let config = registration_config(&args).await?;
@@ -442,6 +452,8 @@ async fn registration_config(args: &AddArgs) -> Result<ServiceConfig> {
         enabled: args.enable,
         restart: args.restart,
         stop_timeout_ms: args.stop_timeout,
+        shell_env: config::default_shell_env() && !args.no_shell_env,
+        shell: None,
         env_file,
         environment,
     };
@@ -456,18 +468,8 @@ async fn registration_config(args: &AddArgs) -> Result<ServiceConfig> {
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        if args.shell.is_some() && extension != "ps1" {
-            return fail(
-                "INVALID_SHELL",
-                "--shell is only supported for Windows .ps1 scripts",
-            );
-        }
         if extension == "ps1" {
-            let shell = resolve::windows_shell::powershell(
-                &config.cwd,
-                path.as_deref(),
-                args.shell.as_deref(),
-            )?;
+            let shell = resolve::windows_shell::powershell(&config.cwd, path.as_deref())?;
             config.interpreter_environment = resolve::windows_shell::environment(&shell);
             config.resolved_script = Some(config.resolved_executable);
             config.resolved_executable = shell;
@@ -489,13 +491,15 @@ async fn registration_config(args: &AddArgs) -> Result<ServiceConfig> {
         }
         config
     };
-    #[cfg(not(windows))]
-    if args.shell.is_some() {
-        return fail(
-            "INVALID_SHELL",
-            "--shell is only supported for Windows .ps1 scripts",
-        );
-    }
+    #[cfg(unix)]
+    let config = {
+        let mut config = config;
+        if config.shell_env {
+            // 登録した端末のシェルを保存し、ログインシェルと異なるシェルの rc も読み込む。
+            config.shell = process::shell_env::registering_shell(&config.cwd, path.as_deref());
+        }
+        config
+    };
     let _ = environment;
     config.validate()?;
     Ok(config)
@@ -674,7 +678,15 @@ async fn foreground(paths: &Paths, name: Option<String>) -> Result<i32> {
         error
     };
     let config = config::load_named(paths, &selected.name).map_err(restore)?;
-    let mut tree = ProcessTree::spawn(&config, true).map_err(restore)?;
+    // background と同じ環境で起動する。端末の環境はログインシェルの取得元として継承する。
+    let base = tokio::select! {
+        _ = &mut signal => {
+            restore(anyhow::anyhow!("interrupted"));
+            return Ok(130);
+        }
+        base = process::base_environment(&config) => base.map_err(restore)?,
+    };
+    let mut tree = ProcessTree::spawn(&config, true, &base).map_err(restore)?;
     status.pid = tree.child.id();
     atomic_write(&paths.status(&config.name), &serde_json::to_vec(&status)?)?;
     let mut interval = tokio::time::interval(Duration::from_millis(150));
@@ -922,6 +934,27 @@ async fn doctor(paths: &Paths, json: bool) -> Result<i32> {
                         "entrypoint",
                         if script.is_file() { "ok" } else { "error" },
                         readable_path(script).display().to_string(),
+                        Some(config.name.clone()),
+                    );
+                }
+                #[cfg(unix)]
+                if config.shell_env {
+                    let result = async {
+                        let shell = process::shell_env::select(config.shell.as_deref())?;
+                        let executable = std::env::current_exe()?;
+                        let environment =
+                            process::shell_env::capture(&shell, &config.cwd, &executable).await?;
+                        Ok::<_, anyhow::Error>(format!(
+                            "{} variables from {}",
+                            environment.len(),
+                            readable_path(&shell).display()
+                        ))
+                    }
+                    .await;
+                    push(
+                        "shell-env",
+                        if result.is_ok() { "ok" } else { "error" },
+                        result.unwrap_or_else(|e| format!("{e:#}")),
                         Some(config.name.clone()),
                     );
                 }

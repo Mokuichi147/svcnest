@@ -77,6 +77,8 @@ impl RunnerSandbox {
             enabled: true,
             restart,
             stop_timeout_ms: 300,
+            shell_env: false,
+            shell: None,
             env_file: None,
             environment: [("SVCNEST_DIAGNOSTIC_EXIT_CODE".into(), code.to_string())].into(),
         }

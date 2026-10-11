@@ -17,9 +17,15 @@ Windows の npm / npx と Node.js 用 cmd-shim は `resolve::node_shim` が解�
 
 一般の `.bat` / `.cmd` は絶対パスを保存し、Rust 標準ライブラリのバッチ専用引数エスケープで Windows 標準の `cmd.exe` から起動します。`node_shim` は対象外のバッチには `None` を返しますが、認識した Node.js ランチャーの実体を解決できない場合は登録を失敗させます。バッチ内のコードや引数を登録時に実行しません。
 
-Windows の `.ps1` は `resolve::windows_shell` が PowerShell を解決します。明示した `--shell`、登録元の直近のシェルが PowerShell の場合の実体、登録時 PATH の `pwsh.exe` / `powershell.exe`、Windows 標準の PowerShell の順に選びます。親プロセス列は ToolHelp で読み取り、途中で別のシェルを見つけた場合はそれより前の PowerShell を選びません。シェルの絶対パス、`resolved_script`、`interpreter_args` を保存し、foreground と background は同じ起動処理を使います。プロファイルは読み込まず `-File` へ元 argv を渡します。PowerShell 5.1 の実行ポリシー判定のため、スクリプト引数だけは内部形式の `\\?\` パスを通常のドライブ / UNC 表記に戻します。
+Windows の `.ps1` は `resolve::windows_shell` が PowerShell を解決します。登録元の直近のシェルが PowerShell の場合の実体、登録時 PATH の `pwsh.exe` / `powershell.exe`、Windows 標準の PowerShell の順に選びます。親プロセス列は ToolHelp で読み取り、途中で別のシェルを見つけた場合はそれより前の PowerShell を選びません。シェルの絶対パス、`resolved_script`、`interpreter_args` を保存し、foreground と background は同じ起動処理を使います。プロファイルは読み込まず `-File` へ元 argv を渡します。PowerShell 5.1 の実行ポリシー判定のため、スクリプト引数だけは内部形式の `\\?\` パスを通常のドライブ / UNC 表記に戻します。
 
 `interpreter_environment` にセッション限定の `PSExecutionPolicyPreference` と、登録元と同じシェルを選んだ場合の `PSModulePath` を保存します。env-file と `--env` は保存したシェル環境より優先します。起動時は daemon の同名変数を継承せず、保存した設定または選択した PowerShell の既定値を使い、5.1 と 7 のモジュールパスを混在させません。
+
+macOS / Linux の `shell_env` が有効なサービスは、起動のたびに `process::shell_env` がシェルの login / rc ファイルを読み込み、`exec svcnest __shell-env <nonce>` で自身の環境を NUL 区切りで出力させます。シェルは設定の `shell`、passwd のログインシェル、`SHELL`、`/bin/sh` の順に選びます。`add` は親プロセスを辿り、引数がオプションだけの既知のシェル（`sh -c` やスクリプト実行中のものを除く）を登録元の端末のシェルとして保存します。パッケージ更新で変わる実体ではなく、同じファイルを指す `SHELL` や PATH 上のパスを保存します。
+
+起動方法はシェルの種類で切り替えます。bash は login では `.bashrc` を読まないため、`bash -l -c` で profile を読んだ後に `bash -i -c` を exec します。csh / tcsh は `-l` を単独でしか受け付けないため、コマンドを stdin から渡します。PowerShell は `-Login -Command` を使い、引用はシェルごとの規則に従います。
+
+rc ファイルの stdout は nonce の区切りで除外し、stderr は破棄して値を診断へ転記しません。シェルは `setsid` で制御端末から切り離し、foreground の端末グループを奪わせません。終端の区切りを読んだ時点で完了するため、rc が起動した background プロセスが stdout を保持しても待ちません。10 秒の期限を超えた場合はセッションごと強制終了して起動を失敗させます。取得した環境は daemon の環境に重ね、`interpreter_environment`、env-file、`--env` と登録時の PATH がそれより優先します。`_`、`PWD`、`OLDPWD` はシェル自身の状態のため除外します。
 
 `resolve::service` がサービス名・cwd・親ディレクトリ・曖昧さ・`--all` の規則を一箇所で実装します。すべての通常 CLI 操作と IPC 操作がこれを使用します。明示した名前は cwd に優先し、複数サービスが見つかった階層からさらに親を探索しません。
 
