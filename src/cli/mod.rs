@@ -95,12 +95,6 @@ pub struct AddArgs {
     pub cwd: Option<PathBuf>,
     #[arg(
         long,
-        value_name = "EXECUTABLE",
-        help = "Select the PowerShell executable for a Windows .ps1 script"
-    )]
-    pub shell: Option<String>,
-    #[arg(
-        long,
         value_enum,
         default_value_t = RestartPolicy::OnFailure,
         value_name = "POLICY",
@@ -474,18 +468,8 @@ async fn registration_config(args: &AddArgs) -> Result<ServiceConfig> {
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        if args.shell.is_some() && extension != "ps1" {
-            return fail(
-                "INVALID_SHELL",
-                "--shell is only supported for Windows .ps1 scripts",
-            );
-        }
         if extension == "ps1" {
-            let shell = resolve::windows_shell::powershell(
-                &config.cwd,
-                path.as_deref(),
-                args.shell.as_deref(),
-            )?;
+            let shell = resolve::windows_shell::powershell(&config.cwd, path.as_deref())?;
             config.interpreter_environment = resolve::windows_shell::environment(&shell);
             config.resolved_script = Some(config.resolved_executable);
             config.resolved_executable = shell;
@@ -507,13 +491,6 @@ async fn registration_config(args: &AddArgs) -> Result<ServiceConfig> {
         }
         config
     };
-    #[cfg(not(windows))]
-    if args.shell.is_some() {
-        return fail(
-            "INVALID_SHELL",
-            "--shell is only supported for Windows .ps1 scripts",
-        );
-    }
     #[cfg(unix)]
     let config = {
         let mut config = config;

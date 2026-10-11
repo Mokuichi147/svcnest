@@ -19,17 +19,7 @@ use windows_sys::Win32::{
     },
 };
 
-pub fn powershell(cwd: &Path, path: Option<&OsStr>, explicit: Option<&str>) -> Result<PathBuf> {
-    if let Some(command) = explicit {
-        let shell = executable::resolve(command, cwd, path, Some(OsStr::new(".EXE")))?;
-        if !is_powershell(&shell) {
-            return fail(
-                "INVALID_SHELL",
-                "Select powershell.exe or pwsh.exe for a .ps1 script",
-            );
-        }
-        return Ok(shell);
-    }
+pub fn powershell(cwd: &Path, path: Option<&OsStr>) -> Result<PathBuf> {
     if let Some(shell) = current_shell().filter(|shell| is_powershell(shell)) {
         return Ok(shell);
     }
@@ -47,7 +37,7 @@ pub fn powershell(cwd: &Path, path: Option<&OsStr>, explicit: Option<&str>) -> R
     }
     fail(
         "SHELL_NOT_FOUND",
-        "Cannot find PowerShell; specify --shell with a powershell.exe or pwsh.exe path",
+        "Cannot find PowerShell; install pwsh.exe or add powershell.exe to PATH",
     )
 }
 
@@ -158,31 +148,4 @@ fn current_shell() -> Option<PathBuf> {
         pid = parent;
     }
     None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn explicit_shell_uses_the_registration_path_and_requires_powershell() {
-        let temp = tempfile::tempdir().unwrap();
-        let bin = temp.path().join("shell with spaces");
-        fs::create_dir(&bin).unwrap();
-        for name in ["pwsh.EXE", "cmd.exe"] {
-            fs::write(bin.join(name), "fixture").unwrap();
-        }
-        let path = std::env::join_paths([&bin]).unwrap();
-        assert_eq!(
-            powershell(temp.path(), Some(&path), Some("pwsh")).unwrap(),
-            fs::canonicalize(bin.join("pwsh.EXE")).unwrap()
-        );
-        assert_eq!(
-            crate::error::ServiceError::code(
-                &powershell(temp.path(), Some(&path), Some("cmd.exe")).unwrap_err()
-            ),
-            "INVALID_SHELL"
-        );
-        assert!(powershell(temp.path(), Some(&path), Some("missing")).is_err());
-    }
 }

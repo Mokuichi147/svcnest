@@ -987,17 +987,6 @@ fn windows_batches_register_directly_and_keep_literal_arguments_in_both_run_mode
         assert!(logs.contains(&serde_json::to_string(&arguments).unwrap()));
         assert!(!sandbox.project.join("injected.txt").exists());
     }
-    sandbox.error(
-        &[
-            "add",
-            "invalid",
-            "--shell",
-            "pwsh",
-            "--",
-            ".\\start script.bat",
-        ],
-        "INVALID_SHELL",
-    );
 }
 
 #[cfg(windows)]
@@ -1116,19 +1105,10 @@ fn windows_ps1_uses_the_registering_powershell_and_pins_its_environment() {
         assert!(!sandbox.project.join("injected.txt").exists());
     }
     assert!(tested > 0, "Windows PowerShell is required for this test");
-    let shell = svcnest::resolve::executable::resolve(
-        "powershell.exe",
-        &sandbox.project,
-        std::env::var_os("PATH").as_deref(),
-        None,
-    )
-    .unwrap();
     let literal_arguments = ["", "\"quoted\"", "trailing\\", "-flag", "first\r\nsecond"];
     let mut registration = vec![
         "add",
-        "explicit",
-        "--shell",
-        shell.to_str().unwrap(),
+        "literal",
         "--env",
         "PSExecutionPolicyPreference=RemoteSigned",
         "--",
@@ -1136,20 +1116,10 @@ fn windows_ps1_uses_the_registering_powershell_and_pins_its_environment() {
     ];
     registration.extend(literal_arguments);
     sandbox.ok(&registration);
-    assert_eq!(
-        config::load_named(&sandbox.paths, "explicit")
-            .unwrap()
-            .resolved_executable,
-        shell
-    );
     let result: serde_json::Value =
-        serde_json::from_str(sandbox.ok(&["run", "explicit"]).trim()).unwrap();
+        serde_json::from_str(sandbox.ok(&["run", "literal"]).trim()).unwrap();
     assert_eq!(result["policy"], "RemoteSigned");
     assert_eq!(result["argv"], serde_json::json!(literal_arguments));
-    sandbox.error(
-        &["add", "invalid", "--shell", "cmd.exe", "--", input],
-        "INVALID_SHELL",
-    );
 }
 
 #[cfg(windows)]

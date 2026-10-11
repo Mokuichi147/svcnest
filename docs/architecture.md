@@ -17,7 +17,7 @@ Windows の npm / npx と Node.js 用 cmd-shim は `resolve::node_shim` が解�
 
 一般の `.bat` / `.cmd` は絶対パスを保存し、Rust 標準ライブラリのバッチ専用引数エスケープで Windows 標準の `cmd.exe` から起動します。`node_shim` は対象外のバッチには `None` を返しますが、認識した Node.js ランチャーの実体を解決できない場合は登録を失敗させます。バッチ内のコードや引数を登録時に実行しません。
 
-Windows の `.ps1` は `resolve::windows_shell` が PowerShell を解決します。明示した `--shell`、登録元の直近のシェルが PowerShell の場合の実体、登録時 PATH の `pwsh.exe` / `powershell.exe`、Windows 標準の PowerShell の順に選びます。親プロセス列は ToolHelp で読み取り、途中で別のシェルを見つけた場合はそれより前の PowerShell を選びません。シェルの絶対パス、`resolved_script`、`interpreter_args` を保存し、foreground と background は同じ起動処理を使います。プロファイルは読み込まず `-File` へ元 argv を渡します。PowerShell 5.1 の実行ポリシー判定のため、スクリプト引数だけは内部形式の `\\?\` パスを通常のドライブ / UNC 表記に戻します。
+Windows の `.ps1` は `resolve::windows_shell` が PowerShell を解決します。登録元の直近のシェルが PowerShell の場合の実体、登録時 PATH の `pwsh.exe` / `powershell.exe`、Windows 標準の PowerShell の順に選びます。親プロセス列は ToolHelp で読み取り、途中で別のシェルを見つけた場合はそれより前の PowerShell を選びません。シェルの絶対パス、`resolved_script`、`interpreter_args` を保存し、foreground と background は同じ起動処理を使います。プロファイルは読み込まず `-File` へ元 argv を渡します。PowerShell 5.1 の実行ポリシー判定のため、スクリプト引数だけは内部形式の `\\?\` パスを通常のドライブ / UNC 表記に戻します。
 
 `interpreter_environment` にセッション限定の `PSExecutionPolicyPreference` と、登録元と同じシェルを選んだ場合の `PSModulePath` を保存します。env-file と `--env` は保存したシェル環境より優先します。起動時は daemon の同名変数を継承せず、保存した設定または選択した PowerShell の既定値を使い、5.1 と 7 のモジュールパスを混在させません。
 

@@ -96,7 +96,6 @@ svcnest add api \
 | `--stop-timeout <time>` | 停止要求から強制終了までの待機時間。`1ms`〜`300s`、単位なしは秒 |
 | `--env KEY=VALUE` | 環境変数を保存 |
 | `--env-file <path>` | 起動のたびに読み込む env-file（値は設定へコピーしない） |
-| `--shell <shell>` | Windows: `.ps1` を実行する PowerShell |
 | `--no-shell-env` | シェルの login / rc ファイルが export する環境を読み込まない（macOS / Linux） |
 | `--enable` | 登録と同時に自動起動を有効化 |
 | `--replace` | 停止中の同名サービスを上書き |
@@ -143,13 +142,10 @@ macOS / Linux では、端末から起動した場合と同じ環境になるよ
 ```powershell
 svcnest add app -- .\start.bat
 svcnest add worker -- .\start.ps1 -Port 8000
-
-# PowerShell を明示する場合（pwsh / powershell / 実行ファイルのパス）
-svcnest add worker7 --shell pwsh -- .\start.ps1
 ```
 
 - `.bat` / `.cmd` は `cmd.exe` で起動します。
-- `.ps1` は登録元のシェルが PowerShell ならそれを使い、それ以外は `pwsh.exe`、`powershell.exe` の順に探します。プロファイルは読み込みません（`-NoProfile -File`）。
+- `.ps1` は登録元のシェルが PowerShell ならそれを使い、それ以外は `pwsh.exe`、`powershell.exe` の順に探します。特定の PowerShell で動かしたい場合は、その PowerShell から登録してください。プロファイルは読み込みません（`-NoProfile -File`）。
 - npm / npx などの Node.js ランチャーも `svcnest add mcp -- npx some-mcp-server` のように登録できます。
 
 svcnest はバッチ全体の終了コードで失敗を判定します。対象の終了コードをそのまま返し、`pause` は使わないでください（background では入力を受け付けず、終了コードも `0` に変わる場合があります）。
