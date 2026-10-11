@@ -96,7 +96,7 @@ pub struct AddArgs {
     #[arg(
         long,
         value_name = "EXECUTABLE",
-        help = "Windows: PowerShell for a .ps1 script. macOS / Linux: shell whose login and rc files provide the environment [default: the registering shell]"
+        help = "Select the PowerShell executable for a Windows .ps1 script"
     )]
     pub shell: Option<String>,
     #[arg(
@@ -507,31 +507,19 @@ async fn registration_config(args: &AddArgs) -> Result<ServiceConfig> {
         }
         config
     };
+    #[cfg(not(windows))]
+    if args.shell.is_some() {
+        return fail(
+            "INVALID_SHELL",
+            "--shell is only supported for Windows .ps1 scripts",
+        );
+    }
     #[cfg(unix)]
     let config = {
         let mut config = config;
-        if args.no_shell_env && args.shell.is_some() {
-            return fail(
-                "INVALID_SHELL",
-                "--shell cannot be combined with --no-shell-env",
-            );
-        }
         if config.shell_env {
-            config.shell = match &args.shell {
-                Some(shell) => {
-                    let shell =
-                        resolve::executable::resolve(shell, &config.cwd, path.as_deref(), None)?;
-                    if process::shell_env::kind(&shell).is_none() {
-                        return fail(
-                            "INVALID_SHELL",
-                            format!("{} is not a shell", readable_path(&shell).display()),
-                        );
-                    }
-                    Some(shell)
-                }
-                // 登録した端末のシェルを保存し、ログインシェルと異なるシェルの rc も読み込む。
-                None => process::shell_env::registering_shell(&config.cwd, path.as_deref()),
-            };
+            // 登録した端末のシェルを保存し、ログインシェルと異なるシェルの rc も読み込む。
+            config.shell = process::shell_env::registering_shell(&config.cwd, path.as_deref());
         }
         config
     };

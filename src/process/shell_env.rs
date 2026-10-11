@@ -61,14 +61,14 @@ pub fn kind(shell: &Path) -> Option<Kind> {
     })
 }
 
-/// 登録で指定したシェル、passwd のログインシェル、`SHELL`、`/bin/sh` の順に選ぶ。
+/// 登録元の端末で検出したシェル、passwd のログインシェル、`SHELL`、`/bin/sh` の順に選ぶ。
 pub fn select(configured: Option<&Path>) -> Result<PathBuf> {
     if let Some(shell) = configured {
         if !resolve::executable::is_executable(shell) {
             return fail(
                 "SHELL_NOT_FOUND",
                 format!(
-                    "Shell {} no longer exists; register again with --shell or --no-shell-env",
+                    "Shell {} no longer exists; set `shell` in the config, register again from another shell, or use --no-shell-env",
                     readable_path(shell).display()
                 ),
             );
@@ -309,7 +309,9 @@ pub async fn capture(shell: &Path, cwd: &Path, executable: &Path) -> Result<Envi
     let Some(kind) = kind(shell) else {
         return fail(
             "SHELL_ENV_FAILED",
-            format!("{shown} is not a shell; register with --shell or --no-shell-env"),
+            format!(
+                "{shown} is not a shell; set `shell` in the config or register with --no-shell-env"
+            ),
         );
     };
     let nonce = format!(

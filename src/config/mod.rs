@@ -56,7 +56,7 @@ pub struct ServiceConfig {
     pub stop_timeout_ms: u64,
     #[serde(default = "default_shell_env")]
     pub shell_env: bool,
-    /// 環境を読み込むシェル。未指定の場合は起動時にログインシェルを選ぶ。
+    /// 環境を読み込むシェル。登録元の端末から検出し、未指定の場合は起動時にログインシェルを選ぶ。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell: Option<PathBuf>,
     #[serde(default)]

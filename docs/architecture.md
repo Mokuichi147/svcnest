@@ -21,7 +21,7 @@ Windows の `.ps1` は `resolve::windows_shell` が PowerShell を解決しま�
 
 `interpreter_environment` にセッション限定の `PSExecutionPolicyPreference` と、登録元と同じシェルを選んだ場合の `PSModulePath` を保存します。env-file と `--env` は保存したシェル環境より優先します。起動時は daemon の同名変数を継承せず、保存した設定または選択した PowerShell の既定値を使い、5.1 と 7 のモジュールパスを混在させません。
 
-macOS / Linux の `shell_env` が有効なサービスは、起動のたびに `process::shell_env` がシェルの login / rc ファイルを読み込み、`exec svcnest __shell-env <nonce>` で自身の環境を NUL 区切りで出力させます。シェルは設定の `shell`、passwd のログインシェル、`SHELL`、`/bin/sh` の順に選びます。`add` は `--shell` がなければ親プロセスを辿り、引数がオプションだけの既知のシェル（`sh -c` やスクリプト実行中のものを除く）を登録元の端末のシェルとして保存します。パッケージ更新で変わる実体ではなく、同じファイルを指す `SHELL` や PATH 上のパスを保存します。
+macOS / Linux の `shell_env` が有効なサービスは、起動のたびに `process::shell_env` がシェルの login / rc ファイルを読み込み、`exec svcnest __shell-env <nonce>` で自身の環境を NUL 区切りで出力させます。シェルは設定の `shell`、passwd のログインシェル、`SHELL`、`/bin/sh` の順に選びます。`add` は親プロセスを辿り、引数がオプションだけの既知のシェル（`sh -c` やスクリプト実行中のものを除く）を登録元の端末のシェルとして保存します。パッケージ更新で変わる実体ではなく、同じファイルを指す `SHELL` や PATH 上のパスを保存します。
 
 起動方法はシェルの種類で切り替えます。bash は login では `.bashrc` を読まないため、`bash -l -c` で profile を読んだ後に `bash -i -c` を exec します。csh / tcsh は `-l` を単独でしか受け付けないため、コマンドを stdin から渡します。PowerShell は `-Login -Command` を使い、引用はシェルごとの規則に従います。
 
