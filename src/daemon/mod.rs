@@ -482,6 +482,11 @@ pub async fn serve(paths: Paths) -> Result<()> {
 }
 
 pub async fn ensure(paths: &Paths) -> Result<()> {
+    // 登録時の実行ファイルが更新やアンインストールで消えると、次のログインで起動できない。
+    // 修復できなくても、目の前の操作は続ける。
+    if let Err(error) = crate::platform::repair(paths).await {
+        eprintln!("warning: {error:#}; run svcnest daemon install");
+    }
     if ipc::ping(paths).await {
         return Ok(());
     }

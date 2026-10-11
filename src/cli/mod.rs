@@ -78,6 +78,9 @@ pub enum CliCommand {
     },
     #[command(name = "__runner", hide = true)]
     Runner { name: String },
+    /// インストーラーが更新後に呼び、移動・削除された実行ファイルを指す登録を直す。
+    #[command(name = "__repair-registration", hide = true)]
+    RepairRegistration,
     #[cfg(unix)]
     #[command(name = "__shell-env", hide = true)]
     ShellEnv { nonce: String },
@@ -302,11 +305,18 @@ pub async fn execute(cli: Cli) -> Result<i32> {
         process::shell_env::print(nonce)?;
         return Ok(0);
     }
+    // 未使用の環境では、インストーラーからの呼び出しで保存先を作らない。
+    if matches!(cli.command, CliCommand::RepairRegistration)
+        && !Paths::resolve_home(cli.home.clone())?.is_dir()
+    {
+        return Ok(0);
+    }
     let paths = Paths::discover(cli.home)?;
     match cli.command {
         CliCommand::Runner { name } => {
             crate::runner::serve(&paths, &name).await?;
         }
+        CliCommand::RepairRegistration => platform::repair(&paths).await?,
         #[cfg(unix)]
         CliCommand::ShellEnv { .. } => unreachable!(),
         CliCommand::Daemon { command } => return daemon_command(paths, command).await,
@@ -852,14 +862,26 @@ async fn doctor(paths: &Paths, json: bool) -> Result<i32> {
         })
     };
     let registered = platform::registered(paths)?;
-    push(
-        "daemon-registration",
-        if registered { "ok" } else { "warning" },
-        readable_path(&platform::registration_path(paths)?)
-            .display()
-            .to_string(),
-        None,
-    );
+    let registration = readable_path(&platform::registration_path(paths)?)
+        .display()
+        .to_string();
+    match platform::missing_executable(paths)? {
+        Some(missing) => push(
+            "daemon-registration",
+            "error",
+            format!(
+                "{registration} refers to missing {}; run svcnest daemon install",
+                readable_path(&missing).display()
+            ),
+            None,
+        ),
+        None => push(
+            "daemon-registration",
+            if registered { "ok" } else { "warning" },
+            registration,
+            None,
+        ),
+    }
     let running = ipc::ping(paths).await;
     let locked = Lock::try_acquire(&paths.daemon_lock())?.is_none();
     push(

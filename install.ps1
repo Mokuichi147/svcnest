@@ -194,6 +194,20 @@ function Get-SvcnestBinaryVersion([string]$Binary) {
     return ([string]$output).Trim()
 }
 
+function Update-SvcnestRegistration([string]$Binary) {
+    # 自動起動の登録が移動・削除された実行ファイルを指していれば、配置した exe へ直す。
+    # 失敗してもインストールは完了済みで、次に CLI が daemon を確認するときにも同じ修復を行う。
+    # Windows PowerShell 5.1 は Stop のままだと標準エラー出力を例外にするため、ここだけ緩める。
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & $Binary __repair-registration 2>&1
+        # 2 は修復に対応していない旧版がコマンドを拒否した場合。
+        if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq 2) { return }
+        $detail = ($output | ForEach-Object { "$_" }) -join ' '
+    } catch { $detail = $_.Exception.Message }
+    Write-Warning "自動起動の登録を更新できませんでした: $detail svcnest doctor で確認してください。"
+}
+
 function Install-Svcnest {
     [CmdletBinding()]
     param(
@@ -264,6 +278,7 @@ function Install-Svcnest {
         if (-not $NoModifyPath) { Update-SvcnestPath $InstallDir }
         Write-Host "インストール完了: $installedVersion"
         Write-Host "配置先: $destination"
+        Update-SvcnestRegistration $destination
         if ($script:SvcnestSkippedExecutable) {
             Write-Warning "シンボリックリンクまたは書き込めない場所にある既存の $($script:SvcnestSkippedExecutable) は更新していません。PATH の順序によっては既存のコマンドが優先されます。"
         }

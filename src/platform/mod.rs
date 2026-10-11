@@ -68,6 +68,58 @@ pub fn registered(paths: &Paths) -> Result<bool> {
     Ok(registration_path(paths)?.is_file())
 }
 
+/// 保存済みの登録定義が起動に使う実行ファイル。
+/// 現行の定義は起動役のコピーと `--source-executable` の更新元、旧定義は起動役だけを返す。
+pub fn registered_executables(paths: &Paths) -> Result<Vec<PathBuf>> {
+    let bytes = match fs::read(registration_path(paths)?) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    #[cfg(target_os = "macos")]
+    let args = macos::registered_args(&bytes);
+    #[cfg(target_os = "linux")]
+    let args = linux::registered_args(&bytes);
+    #[cfg(windows)]
+    let args = windows::registered_args(&bytes);
+    Ok(executables_in(args))
+}
+
+fn executables_in(args: Vec<String>) -> Vec<PathBuf> {
+    let mut executables = Vec::new();
+    executables.extend(args.first().map(PathBuf::from));
+    if let Some(index) = args.iter().position(|arg| arg == "--source-executable") {
+        executables.extend(args.get(index + 1).map(PathBuf::from));
+    }
+    executables
+}
+
+/// 登録定義が参照する実行ファイルのうち、存在しない最初のもの。
+pub fn missing_executable(paths: &Paths) -> Result<Option<PathBuf>> {
+    Ok(registered_executables(paths)?
+        .into_iter()
+        .find(|path| !path.is_file()))
+}
+
+/// 移動・削除された実行ファイルを参照する登録を、現在の実行ファイルで登録し直す。
+/// 登録は enable / install で利用者が求めたものなので、壊れたままにせず次回のログインに備える。
+pub async fn repair(paths: &Paths) -> Result<()> {
+    let Some(missing) = missing_executable(paths)? else {
+        return Ok(());
+    };
+    // launchd の再登録は bootout を伴い、登録から起動した daemon を止めるため、停止中だけ行う。
+    #[cfg(target_os = "macos")]
+    if crate::ipc::ping(paths).await {
+        return Ok(());
+    }
+    install(paths).await.with_context(|| {
+        format!(
+            "Cannot repair the login registration that refers to missing {}",
+            crate::paths::readable_path(&missing).display()
+        )
+    })
+}
+
 pub fn render(paths: &Paths, executable: &Path) -> Result<String> {
     #[cfg(target_os = "macos")]
     {
@@ -230,4 +282,44 @@ pub fn xml_escape(text: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
+}
+
+#[cfg(any(target_os = "macos", windows))]
+pub fn xml_unescape(text: &str) -> String {
+    text.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registration_with_a_missing_executable_is_detected() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths::discover(Some(temp.path().join("state"))).unwrap();
+        assert!(registered_executables(&paths).unwrap().is_empty());
+        let source = temp.path().join("installed");
+        fs::write(&source, b"build").unwrap();
+        let runtime = crate::runtime::prepare(&paths, &source).unwrap();
+        #[cfg(target_os = "macos")]
+        let bytes = macos::render_runtime(&paths, &runtime, &source).into_bytes();
+        #[cfg(target_os = "linux")]
+        let bytes = linux::render_runtime(&paths, &runtime, &source).into_bytes();
+        #[cfg(windows)]
+        let bytes = windows::registration_bytes(
+            &windows::render_runtime(&paths, &runtime, &source).unwrap(),
+        );
+        atomic_write(&registration_path(&paths).unwrap(), &bytes).unwrap();
+        assert_eq!(
+            registered_executables(&paths).unwrap(),
+            [runtime, source.clone()]
+        );
+        assert_eq!(missing_executable(&paths).unwrap(), None);
+        fs::remove_file(&source).unwrap();
+        assert_eq!(missing_executable(&paths).unwrap(), Some(source));
+    }
 }

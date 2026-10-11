@@ -1,6 +1,6 @@
 use crate::{
     paths::Paths,
-    platform::{checked_command, label, xml_escape},
+    platform::{checked_command, label, xml_escape, xml_unescape},
 };
 use anyhow::Result;
 use std::{fs, path::Path};
@@ -64,6 +64,23 @@ pub(crate) fn registration_current(paths: &Paths, source: &Path, bytes: &[u8]) -
         && fs::symlink_metadata(&runtime)
             .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
         && crate::runtime::executable_path(paths, &runtime).is_ok_and(|path| path == runtime)
+}
+
+/// 保存済みの plist から ProgramArguments を取り出す。
+pub(crate) fn registered_args(bytes: &[u8]) -> Vec<String> {
+    let text = String::from_utf8_lossy(bytes);
+    let Some((_, rest)) = text.split_once("<key>ProgramArguments</key><array>") else {
+        return Vec::new();
+    };
+    let Some((array, _)) = rest.split_once("</array>") else {
+        return Vec::new();
+    };
+    array
+        .split("<string>")
+        .skip(1)
+        .filter_map(|item| item.split_once("</string>"))
+        .map(|(value, _)| xml_unescape(value))
+        .collect()
 }
 
 pub async fn install(_paths: &Paths, path: &Path) -> Result<()> {
