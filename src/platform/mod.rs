@@ -76,16 +76,16 @@ pub fn registered_executables(paths: &Paths) -> Result<Vec<PathBuf>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error.into()),
     };
-    #[cfg(target_os = "macos")]
-    let args = macos::registered_args(&bytes);
-    #[cfg(target_os = "linux")]
-    let args = linux::registered_args(&bytes);
-    #[cfg(windows)]
-    let args = windows::registered_args(&bytes);
-    Ok(executables_in(args))
+    Ok(executables_in(&bytes))
 }
 
-fn executables_in(args: Vec<String>) -> Vec<PathBuf> {
+fn executables_in(bytes: &[u8]) -> Vec<PathBuf> {
+    #[cfg(target_os = "macos")]
+    let args = macos::registered_args(bytes);
+    #[cfg(target_os = "linux")]
+    let args = linux::registered_args(bytes);
+    #[cfg(windows)]
+    let args = windows::registered_args(bytes);
     let mut executables = Vec::new();
     executables.extend(args.first().map(PathBuf::from));
     if let Some(index) = args.iter().position(|arg| arg == "--source-executable") {
@@ -297,14 +297,13 @@ pub fn xml_unescape(text: &str) -> String {
 mod tests {
     use super::*;
 
+    // macOS / Linux の登録先は実際の利用者の設定ディレクトリのため、定義はファイルに書かない。
     #[test]
-    fn registration_with_a_missing_executable_is_detected() {
+    fn registered_executables_are_the_runtime_and_its_source() {
         let temp = tempfile::tempdir().unwrap();
         let paths = Paths::discover(Some(temp.path().join("state"))).unwrap();
-        assert!(registered_executables(&paths).unwrap().is_empty());
         let source = temp.path().join("installed");
-        fs::write(&source, b"build").unwrap();
-        let runtime = crate::runtime::prepare(&paths, &source).unwrap();
+        let runtime = paths.home.join("bin").join("digest").join("svcnest");
         #[cfg(target_os = "macos")]
         let bytes = macos::render_runtime(&paths, &runtime, &source).into_bytes();
         #[cfg(target_os = "linux")]
@@ -313,13 +312,7 @@ mod tests {
         let bytes = windows::registration_bytes(
             &windows::render_runtime(&paths, &runtime, &source).unwrap(),
         );
-        atomic_write(&registration_path(&paths).unwrap(), &bytes).unwrap();
-        assert_eq!(
-            registered_executables(&paths).unwrap(),
-            [runtime, source.clone()]
-        );
-        assert_eq!(missing_executable(&paths).unwrap(), None);
-        fs::remove_file(&source).unwrap();
-        assert_eq!(missing_executable(&paths).unwrap(), Some(source));
+        assert_eq!(executables_in(&bytes), [runtime, source]);
+        assert!(executables_in(b"").is_empty());
     }
 }
