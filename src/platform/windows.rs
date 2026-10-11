@@ -1,6 +1,6 @@
 use crate::{
     paths::Paths,
-    platform::{checked_command, label, xml_escape},
+    platform::{checked_command, label, xml_escape, xml_unescape},
 };
 use anyhow::{Context, Result};
 use std::{
@@ -311,6 +311,65 @@ pub(crate) fn registration_bytes(definition: &str) -> Vec<u8> {
         .collect()
 }
 
+/// 保存済みの XML から、実行ファイルを先頭にした起動引数を取り出す。
+/// 旧版が UTF-8 で保存した XML も読む。
+pub(crate) fn registered_args(bytes: &[u8]) -> Vec<String> {
+    let text = match bytes.strip_prefix(&[0xff, 0xfe]) {
+        Some(utf16) => String::from_utf16_lossy(
+            &utf16
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|pair| u16::from_le_bytes(*pair))
+                .collect::<Vec<_>>(),
+        ),
+        None => String::from_utf8_lossy(bytes).into_owned(),
+    };
+    let element = |name: &str| {
+        let (_, rest) = text.split_once(&format!("<{name}>"))?;
+        let (value, _) = rest.split_once(&format!("</{name}>"))?;
+        Some(xml_unescape(value))
+    };
+    let Some(command) = element("Command") else {
+        return Vec::new();
+    };
+    let mut args = vec![command];
+    args.extend(
+        element("Arguments")
+            .map(|arguments| split_args(&arguments))
+            .unwrap_or_default(),
+    );
+    args
+}
+
+fn split_args(arguments: &str) -> Vec<String> {
+    use windows_sys::Win32::UI::Shell::CommandLineToArgvW;
+    // 先頭の要素はプログラム名の規則で解釈されるため、仮の名前を置いて引数だけを取り出す。
+    let line = std::ffi::OsStr::new(&format!("svcnest {arguments}"))
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    unsafe {
+        let mut count = 0;
+        let argv = CommandLineToArgvW(line.as_ptr(), &mut count);
+        if argv.is_null() {
+            return Vec::new();
+        }
+        let args = (1..count as usize)
+            .map(|index| {
+                let arg = *argv.add(index);
+                let mut length = 0;
+                while *arg.add(length) != 0 {
+                    length += 1;
+                }
+                String::from_utf16_lossy(std::slice::from_raw_parts(arg, length))
+            })
+            .collect();
+        LocalFree(argv.cast());
+        args
+    }
+}
+
 pub async fn install(paths: &Paths, path: &Path) -> Result<()> {
     checked_command(
         "schtasks.exe",
@@ -350,4 +409,45 @@ pub async fn status(paths: &Paths) -> Result<String> {
         ],
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registered_args_read_current_and_legacy_definitions() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths::discover(Some(temp.path().join("state & 'quoted'"))).unwrap();
+        let runtime = temp.path().join(r"bin\runtime.exe");
+        let source = temp.path().join(r"install dir\svcnest.exe");
+        let current = render_runtime(&paths, &runtime, &source).unwrap();
+        assert_eq!(
+            registered_args(&registration_bytes(&current)),
+            [
+                runtime.to_string_lossy().into_owned(),
+                "--home".into(),
+                paths.home.to_string_lossy().into_owned(),
+                "daemon".into(),
+                "serve".into(),
+                "--source-executable".into(),
+                source.to_string_lossy().into_owned(),
+            ]
+        );
+        // 1.0.0 より前の定義は起動役にインストール先を直接指定していた。
+        let legacy = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Task><Actions Context="User"><Exec><Command>\\?\C:\Users\me\.cargo\bin\svcnest.exe</Command><Arguments>--home &quot;\\?\C:\Users\me\AppData\Local\svcnest&quot; daemon serve</Arguments></Exec></Actions></Task>
+"#;
+        assert_eq!(
+            registered_args(legacy.as_bytes()),
+            [
+                r"\\?\C:\Users\me\.cargo\bin\svcnest.exe",
+                "--home",
+                r"\\?\C:\Users\me\AppData\Local\svcnest",
+                "daemon",
+                "serve",
+            ]
+        );
+        assert!(registered_args(b"").is_empty());
+    }
 }

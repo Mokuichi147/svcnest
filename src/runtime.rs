@@ -106,7 +106,17 @@ pub fn is_current_executable(paths: &Paths) -> Result<bool> {
 }
 
 pub async fn serve_registered(paths: &Paths, source: &Path) -> Result<i32> {
-    let executable = prepare(paths, source)?;
+    let executable = if source.exists() || !is_current_executable(paths)? {
+        prepare(paths, source)?
+    } else {
+        // 更新元を移動・削除しても、ログイン時の起動は登録したコピーのビルドで続ける。
+        // 登録は次に CLI が daemon を確認するとき、その CLI の配置先へ直す。
+        eprintln!(
+            "Registered source {} is missing; starting the registered runtime",
+            source.display()
+        );
+        fs::canonicalize(std::env::current_exe()?)?
+    };
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;

@@ -68,6 +68,76 @@ pub fn registered(paths: &Paths) -> Result<bool> {
     Ok(registration_path(paths)?.is_file())
 }
 
+/// 保存済みの登録定義が起動に使う実行ファイル。
+/// 現行の定義は起動役のコピーと `--source-executable` の更新元、旧定義は起動役だけを返す。
+pub fn registered_executables(paths: &Paths) -> Result<Vec<PathBuf>> {
+    let bytes = match fs::read(registration_path(paths)?) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    Ok(executables_in(&bytes))
+}
+
+fn executables_in(bytes: &[u8]) -> Vec<PathBuf> {
+    #[cfg(target_os = "macos")]
+    let args = macos::registered_args(bytes);
+    #[cfg(target_os = "linux")]
+    let args = linux::registered_args(bytes);
+    #[cfg(windows)]
+    let args = windows::registered_args(bytes);
+    let mut executables = Vec::new();
+    executables.extend(args.first().map(PathBuf::from));
+    if let Some(index) = args.iter().position(|arg| arg == "--source-executable") {
+        executables.extend(args.get(index + 1).map(PathBuf::from));
+    }
+    executables
+}
+
+/// 登録定義が参照する実行ファイルのうち、存在しない最初のもの。
+pub fn missing_executable(paths: &Paths) -> Result<Option<PathBuf>> {
+    Ok(registered_executables(paths)?
+        .into_iter()
+        .find(|path| !path.is_file()))
+}
+
+/// 移動・削除された実行ファイルを参照する登録を、現在の実行ファイルで登録し直す。
+/// 登録は enable / install で利用者が求めたものなので、壊れたままにせず次回のログインに備える。
+pub async fn repair(paths: &Paths) -> Result<()> {
+    let Some(missing) = missing_executable(paths)? else {
+        return Ok(());
+    };
+    // launchd の再登録は bootout を伴い、登録から起動した daemon を止めるため、停止中だけ行う。
+    #[cfg(target_os = "macos")]
+    if crate::ipc::ping(paths).await {
+        return Ok(());
+    }
+    install(paths).await.with_context(|| {
+        format!(
+            "Cannot repair the login registration that refers to missing {}",
+            crate::paths::readable_path(&missing).display()
+        )
+    })
+}
+
+/// 現在の実行ファイルで登録済みなら、launchd に daemon を起動させる。起動を依頼したら true。
+/// launchd が起動した daemon だけが KeepAlive で監視される。別の実行ファイルの登録は、
+/// その版の daemon が起動するため使わない。
+#[cfg(target_os = "macos")]
+pub async fn start_registered(paths: &Paths) -> Result<bool> {
+    let bytes = match fs::read(registration_path(paths)?) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let source = fs::canonicalize(std::env::current_exe()?)?;
+    if !macos::registration_current(paths, &source, &bytes) || !registration_loaded(paths).await {
+        return Ok(false);
+    }
+    macos::kickstart(paths).await?;
+    Ok(true)
+}
+
 pub fn render(paths: &Paths, executable: &Path) -> Result<String> {
     #[cfg(target_os = "macos")]
     {
@@ -230,4 +300,37 @@ pub fn xml_escape(text: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
+}
+
+#[cfg(any(target_os = "macos", windows))]
+pub fn xml_unescape(text: &str) -> String {
+    text.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // macOS / Linux の登録先は実際の利用者の設定ディレクトリのため、定義はファイルに書かない。
+    #[test]
+    fn registered_executables_are_the_runtime_and_its_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths::discover(Some(temp.path().join("state"))).unwrap();
+        let source = temp.path().join("installed");
+        let runtime = paths.home.join("bin").join("digest").join("svcnest");
+        #[cfg(target_os = "macos")]
+        let bytes = macos::render_runtime(&paths, &runtime, &source).into_bytes();
+        #[cfg(target_os = "linux")]
+        let bytes = linux::render_runtime(&paths, &runtime, &source).into_bytes();
+        #[cfg(windows)]
+        let bytes = windows::registration_bytes(
+            &windows::render_runtime(&paths, &runtime, &source).unwrap(),
+        );
+        assert_eq!(executables_in(&bytes), [runtime, source]);
+        assert!(executables_in(b"").is_empty());
+    }
 }

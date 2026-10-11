@@ -53,6 +53,9 @@ function Get-SvcnestBinaryVersion([string]$Binary) {
     if ($value -eq 'cannot execute') { throw '取得したバイナリを実行できませんでした。' }
     return $value
 }
+# 実際の Task Scheduler は変更せず、配置後に呼び出したことだけを記録する。
+$script:RegistrationUpdates = @()
+function Update-SvcnestRegistration([string]$Binary) { $script:RegistrationUpdates += $Binary }
 
 function Assert-Installer([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
@@ -80,8 +83,10 @@ function Invoke-TestInstall([string]$Version = 'latest', [switch]$ModifyPath) {
 function Expect-InstallFailure([string]$Pattern, [string]$Version = 'latest') {
     $before = [IO.File]::ReadAllBytes($destination)
     $pathBefore = $script:UserPath
+    $updatesBefore = $script:RegistrationUpdates.Count
     $failure = $null
     try { Invoke-TestInstall -Version $Version } catch { $failure = $_ }
+    Assert-Installer ($script:RegistrationUpdates.Count -eq $updatesBefore) '失敗時に自動起動の登録を変更しようとしました。'
     Assert-Installer ($null -ne $failure) '失敗すべきインストールが成功しました。'
     if ($Pattern) { Assert-Installer ($failure.Exception.Message -match $Pattern) $failure.Exception.Message }
     Assert-Installer ([Convert]::ToBase64String($before) -eq [Convert]::ToBase64String([IO.File]::ReadAllBytes($destination))) '既存の実行ファイルを変更しました。'
@@ -98,6 +103,7 @@ try {
     New-Fixture $first
     Invoke-TestInstall
     Assert-Installer ([IO.File]::ReadAllText($destination) -ceq "svcnest $packageVersion") '最新安定版を配置できません。'
+    Assert-Installer ($script:RegistrationUpdates[-1] -ceq $destination) '配置した exe で自動起動の登録を確認しませんでした。'
     Assert-Installer ($script:PathWrites -eq 0 -and $env:Path -ceq $previousProcessPath) '-NoModifyPath でも PATH を変更しました。'
 
     $script:ExpectedBase = "https://github.com/Mokuichi147/svcnest/releases/download/v$packageVersion"

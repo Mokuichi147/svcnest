@@ -239,6 +239,15 @@ main() {
     mv -f "$staging/svcnest" "$install_dir/svcnest"
 
     printf 'インストール完了: %s\n配置先: %s/svcnest\n' "$installed_version" "$install_dir"
+    # 自動起動の登録が移動・削除された実行ファイルを指していれば、配置した svcnest へ直す。
+    # 失敗してもインストールは完了済みで、次に CLI が daemon を確認するときにも同じ修復を行う。
+    repair_status=0
+    repair_output=$("$install_dir/svcnest" __repair-registration 2>&1) || repair_status=$?
+    # 2 は修復に対応していない旧版がコマンドを拒否した場合。
+    if [ "$repair_status" -ne 0 ] && [ "$repair_status" -ne 2 ]; then
+        printf 'svcnest: 自動起動の登録を更新できませんでした: %s\n' "$repair_output" >&2
+        printf 'svcnest: svcnest doctor で確認してください\n' >&2
+    fi
     if [ -n "$skipped_existing" ]; then
         printf 'svcnest: シンボリックリンクまたは書き込めない場所にある既存の %s は更新していません\n' "$skipped_existing" >&2
         printf 'svcnest: PATH の順序によっては既存のコマンドが優先されます\n' >&2

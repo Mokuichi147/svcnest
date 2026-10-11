@@ -482,8 +482,29 @@ pub async fn serve(paths: Paths) -> Result<()> {
 }
 
 pub async fn ensure(paths: &Paths) -> Result<()> {
+    // 登録時の実行ファイルが更新やアンインストールで消えると、次のログインで起動できない。
+    // 修復できなくても、目の前の操作は続ける。
+    if let Err(error) = crate::platform::repair(paths).await {
+        eprintln!("warning: {error:#}; run svcnest daemon install");
+    }
     if ipc::ping(paths).await {
         return Ok(());
+    }
+    // 登録直後は RunAtLoad で launchd が起動している途中のことがある。ここで別に起動すると
+    // launchd 側がロックを取れずに正常終了し、KeepAlive で監視されない daemon が残る。
+    #[cfg(target_os = "macos")]
+    match crate::platform::start_registered(paths).await {
+        Ok(true) => {
+            for _ in 0..200 {
+                if ipc::ping(paths).await {
+                    return Ok(());
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            eprintln!("warning: launchd did not start the daemon; starting it directly");
+        }
+        Ok(false) => (),
+        Err(error) => eprintln!("warning: {error:#}; starting the daemon directly"),
     }
     let log = OpenOptions::new()
         .create(true)

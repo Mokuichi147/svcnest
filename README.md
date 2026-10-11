@@ -175,7 +175,7 @@ OS に登録するのは svcnest の daemon だけです。最初の `enable`、
 
 保存先は `--home <dir>` または `SVCNEST_HOME` で変更できます。daemon はユーザーごとに一つだけ動くため、保存先を切り替える前に既存の daemon を停止してください。
 
-自動起動の登録が失われた場合は、`enable` または `daemon install` で復元できます。
+登録時の svcnest を削除・移動しても、自動起動は止まりません。ログイン時は svcnest が保存先に保持するコピーで daemon を起動し、インストーラーでの更新時や、次に svcnest のコマンドが daemon を確認するときに、新しい配置先で自動的に登録し直します（macOS のコマンドからの再登録は daemon の停止中だけ）。登録の状態は `doctor` の `daemon-registration` で確認できます。登録そのものを削除した場合は、`enable` または `daemon install` で復元できます。
 
 ## 更新
 

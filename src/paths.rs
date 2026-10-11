@@ -44,16 +44,21 @@ pub struct Paths {
 }
 
 impl Paths {
-    pub fn discover(home: Option<PathBuf>) -> Result<Self> {
+    /// 保存先を作らずに、使用する保存先のパスだけを決める。
+    pub fn resolve_home(home: Option<PathBuf>) -> Result<PathBuf> {
         let home = home
             .or_else(|| std::env::var_os("SVCNEST_HOME").map(PathBuf::from))
             .map(Ok)
             .unwrap_or_else(default_home)?;
-        let home = if home.is_absolute() {
+        Ok(if home.is_absolute() {
             home
         } else {
             std::env::current_dir()?.join(home)
-        };
+        })
+    }
+
+    pub fn discover(home: Option<PathBuf>) -> Result<Self> {
+        let home = Self::resolve_home(home)?;
         private_dir(&home)?;
         let home = fs::canonicalize(home)?;
         #[cfg(unix)]
