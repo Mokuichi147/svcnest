@@ -490,6 +490,22 @@ pub async fn ensure(paths: &Paths) -> Result<()> {
     if ipc::ping(paths).await {
         return Ok(());
     }
+    // 登録直後は RunAtLoad で launchd が起動している途中のことがある。ここで別に起動すると
+    // launchd 側がロックを取れずに正常終了し、KeepAlive で監視されない daemon が残る。
+    #[cfg(target_os = "macos")]
+    match crate::platform::start_registered(paths).await {
+        Ok(true) => {
+            for _ in 0..200 {
+                if ipc::ping(paths).await {
+                    return Ok(());
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            eprintln!("warning: launchd did not start the daemon; starting it directly");
+        }
+        Ok(false) => (),
+        Err(error) => eprintln!("warning: {error:#}; starting the daemon directly"),
+    }
     let log = OpenOptions::new()
         .create(true)
         .append(true)

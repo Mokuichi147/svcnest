@@ -120,6 +120,24 @@ pub async fn repair(paths: &Paths) -> Result<()> {
     })
 }
 
+/// 現在の実行ファイルで登録済みなら、launchd に daemon を起動させる。起動を依頼したら true。
+/// launchd が起動した daemon だけが KeepAlive で監視される。別の実行ファイルの登録は、
+/// その版の daemon が起動するため使わない。
+#[cfg(target_os = "macos")]
+pub async fn start_registered(paths: &Paths) -> Result<bool> {
+    let bytes = match fs::read(registration_path(paths)?) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let source = fs::canonicalize(std::env::current_exe()?)?;
+    if !macos::registration_current(paths, &source, &bytes) || !registration_loaded(paths).await {
+        return Ok(false);
+    }
+    macos::kickstart(paths).await?;
+    Ok(true)
+}
+
 pub fn render(paths: &Paths, executable: &Path) -> Result<String> {
     #[cfg(target_os = "macos")]
     {

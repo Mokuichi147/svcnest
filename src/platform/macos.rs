@@ -95,6 +95,18 @@ pub async fn install(_paths: &Paths, path: &Path) -> Result<()> {
     .await?;
     Ok(())
 }
+/// 登録済みのジョブを起動する。起動中なら何もしない。
+pub async fn kickstart(paths: &Paths) -> Result<()> {
+    checked_command(
+        "launchctl",
+        &[
+            "kickstart".into(),
+            format!("{}/io.{}", domain(), label(paths)).into(),
+        ],
+    )
+    .await?;
+    Ok(())
+}
 pub async fn uninstall(paths: &Paths) -> Result<()> {
     checked_command(
         "launchctl",
