@@ -373,7 +373,8 @@ async fn spawned_process_receives_registered_command_name_as_argv0() {
     config.command = vec![
         "svcnest-argv0-probe".into(),
         "-c".into(),
-        "ps -o args= -p $$".into(),
+        // 単一コマンドだと macOS の sh は ps へ exec し、$$ が ps 自身を指す。
+        "ps -o args= -p $$; true".into(),
     ];
     config.environment.insert(
         "PATH".into(),
