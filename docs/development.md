@@ -15,7 +15,7 @@ CI と同じ並列数で実行します。
 - macOS / Linux: `cargo test --locked --all-targets -- --test-threads=3`
 - Windows: `cargo test --locked --all-targets -- --test-threads=1`
 
-`cargo test` は一時ディレクトリと専用の daemon を使用し、自動起動の実機設定を変更しません。実際の子・孫プロセス、同時起動、daemon の強制終了、foreground 実行、再起動バックオフを検証します。CI は macOS arm64 / Intel、Windows x64、Ubuntu x86_64 / arm64 で同じ確認を実行します。runner のラベルは [GitHub の公式一覧](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) に基づいています。
+`cargo test` は一時ディレクトリと専用の daemon を使用し、自動起動の実機設定を変更しません。daemon はユーザー単位で一つのため、既存の daemon が動いていると e2e テストが失敗します。`svcnest daemon stop` で停止してから実行してください。実際の子・孫プロセス、同時起動、daemon の強制終了、foreground 実行、再起動バックオフを検証します。CI は macOS arm64 / Intel、Windows x64、Ubuntu x86_64 / arm64 で同じ確認を実行します。runner のラベルは [GitHub の公式一覧](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) に基づいています。
 
 ## 実機での検証スクリプト
 
