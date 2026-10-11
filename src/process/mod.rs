@@ -26,6 +26,10 @@ impl ProcessTree {
     pub fn spawn(config: &ServiceConfig, foreground: bool) -> Result<Self> {
         config.validate()?;
         let mut command = Command::new(&config.resolved_executable);
+        // シェルと同じく登録時のコマンド名を argv[0] にする。実行名で動作を切り替える
+        // multi-call binary を、symlink 先のパスで登録済みの設定でも正しく起動できる。
+        #[cfg(unix)]
+        command.arg0(&config.command[0]);
         command.args(&config.interpreter_args);
         if let Some(script) = &config.resolved_script {
             #[cfg(windows)]

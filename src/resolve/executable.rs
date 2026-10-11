@@ -71,14 +71,27 @@ fn find_candidate(path: &Path, pathext: Option<&OsStr>) -> Option<PathBuf> {
                 candidate.push(extension);
                 let candidate = PathBuf::from(candidate);
                 if is_executable(&candidate) {
-                    return fs::canonicalize(candidate).ok();
+                    return absolute_executable(&candidate);
                 }
             }
         }
     }
     is_executable(path)
-        .then(|| fs::canonicalize(path).ok())
+        .then(|| absolute_executable(path))
         .flatten()
+}
+
+fn absolute_executable(path: &Path) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        fs::canonicalize(path).ok()
+    }
+    // 最後の symlink は解決しない。rustup の cargo などは実行名で動作を切り替える。
+    #[cfg(not(windows))]
+    {
+        let parent = fs::canonicalize(path.parent()?).ok()?;
+        Some(parent.join(path.file_name()?))
+    }
 }
 
 pub fn is_executable(path: &Path) -> bool {

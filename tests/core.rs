@@ -344,6 +344,57 @@ fn executable_resolution_handles_path_relative_absolute_and_missing() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn executable_resolution_keeps_symlink_name() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let temp = tempfile::tempdir().unwrap();
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let target = bin.join("multicall");
+    fs::write(&target, b"test executable").unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o700)).unwrap();
+    symlink("multicall", bin.join("alias")).unwrap();
+    let path = std::env::join_paths([&bin]).unwrap();
+    // rustup の cargo のように実行名で動作を切り替えるため、symlink 先へ置き換えない。
+    assert_eq!(
+        resolve::executable::resolve("alias", temp.path(), Some(&path), None).unwrap(),
+        fs::canonicalize(&bin).unwrap().join("alias")
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn spawned_process_receives_registered_command_name_as_argv0() {
+    use tokio::io::AsyncReadExt;
+    let temp = tempfile::tempdir().unwrap();
+    let mut config = config_at("argv0", temp.path());
+    config.resolved_executable = fs::canonicalize("/bin/sh").unwrap();
+    config.command = vec![
+        "svcnest-argv0-probe".into(),
+        "-c".into(),
+        "ps -o args= -p $$".into(),
+    ];
+    config.environment.insert(
+        "PATH".into(),
+        std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into()),
+    );
+    let mut tree = svcnest::process::ProcessTree::spawn(&config, false).unwrap();
+    let mut output = String::new();
+    tree.child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut output)
+        .await
+        .unwrap();
+    assert!(tree.child.wait().await.unwrap().success());
+    assert!(
+        output.trim_start().starts_with("svcnest-argv0-probe "),
+        "{output:?}"
+    );
+}
+
 #[test]
 fn relative_path_entries_are_resolved_against_service_cwd() {
     let temp = tempfile::tempdir().unwrap();
