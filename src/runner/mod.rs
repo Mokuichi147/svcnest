@@ -69,7 +69,23 @@ pub async fn serve(paths: &Paths, name: &str) -> Result<()> {
     let log = Arc::new(Mutex::new(RotatingLog::new(&paths.log(name))?));
     let mut backoff = policy::Backoff::default();
     loop {
-        let mut tree = match ProcessTree::spawn(&config, false) {
+        // 再起動のたびに取得し、rc や秘密情報の更新を反映する。
+        let base = tokio::select! {
+            cause = stop_rx.recv() => Err(cause.unwrap_or("control-input-closed")),
+            _ = &mut interrupt => Err("interrupted"),
+            base = process::base_environment(&config) => Ok(base),
+        };
+        let base = match base {
+            Ok(base) => base,
+            Err(cause) => {
+                status.state = ServiceState::Stopped;
+                status.reason = None;
+                record_status_event(&log, &mut status, format!("stopped: cause={cause}"));
+                let _ = emit(paths, name, &status, &mut output).await;
+                return Ok(());
+            }
+        };
+        let mut tree = match base.and_then(|base| ProcessTree::spawn(&config, false, &base)) {
             Ok(tree) => tree,
             Err(error) => {
                 status.state = ServiceState::Failed;
@@ -79,7 +95,7 @@ pub async fn serve(paths: &Paths, name: &str) -> Result<()> {
                 return Ok(());
             }
         };
-        // env-file の読み取りなど、spawn 前の時間を安定稼働に含めない。
+        // ログインシェルや env-file の読み取りなど、spawn 前の時間を安定稼働に含めない。
         let started = Instant::now();
         let stdout = tree
             .child

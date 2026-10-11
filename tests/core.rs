@@ -52,6 +52,8 @@ fn config_at(name: &str, cwd: &Path) -> ServiceConfig {
         enabled: false,
         restart: RestartPolicy::OnFailure,
         stop_timeout_ms: 10_000,
+        shell_env: false,
+        shell: None,
         env_file: None,
         environment: BTreeMap::new(),
     }
@@ -363,10 +365,16 @@ fn executable_resolution_keeps_symlink_name() {
     );
 }
 
+// Linux の ProcessTree は subreaper としてテストプロセスの子もすべて回収するため、
+// 子プロセスを起動するテストを並列に実行しない。
+#[cfg(unix)]
+static CHILD_PROCESSES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[cfg(unix)]
 #[tokio::test]
 async fn spawned_process_receives_registered_command_name_as_argv0() {
     use tokio::io::AsyncReadExt;
+    let _serial = CHILD_PROCESSES.lock().await;
     let temp = tempfile::tempdir().unwrap();
     let mut config = config_at("argv0", temp.path());
     config.resolved_executable = fs::canonicalize("/bin/sh").unwrap();
@@ -380,7 +388,8 @@ async fn spawned_process_receives_registered_command_name_as_argv0() {
         "PATH".into(),
         std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into()),
     );
-    let mut tree = svcnest::process::ProcessTree::spawn(&config, false).unwrap();
+    let mut tree =
+        svcnest::process::ProcessTree::spawn(&config, false, &Default::default()).unwrap();
     let mut output = String::new();
     tree.child
         .stdout
@@ -775,4 +784,173 @@ fn os_registration_contains_only_the_daemon_and_escapes_paths() {
             "\"a\\\\\\\"b\\\\\""
         );
     }
+}
+
+#[cfg(unix)]
+fn fake_shell(dir: &Path, body: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let shell = dir.join("fake-shell");
+    // 対話ログインシェルと同じく -i -l -c <script> を受け取り、rc の代わりに body を実行する。
+    fs::write(&shell, format!("#!/bin/sh\n{body}\neval \"$4\"\n")).unwrap();
+    fs::set_permissions(&shell, fs::Permissions::from_mode(0o755)).unwrap();
+    shell
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn login_shell_environment_is_captured_from_rc_files_in_the_service_cwd() {
+    use svcnest::process::shell_env;
+    let _serial = CHILD_PROCESSES.lock().await;
+    let temp = tempfile::tempdir().unwrap();
+    let cwd = fs::canonicalize(temp.path()).unwrap();
+    let shell = fake_shell(
+        &cwd,
+        "echo 'rc noise'\nSECRET_FROM_RC='a=b c'; export SECRET_FROM_RC\nRC_CWD=$(pwd); export RC_CWD",
+    );
+    let environment = shell_env::capture(&shell, &cwd, Path::new(env!("CARGO_BIN_EXE_svcnest")))
+        .await
+        .unwrap();
+    assert_eq!(environment[OsStr::new("SECRET_FROM_RC")], "a=b c");
+    assert_eq!(environment[OsStr::new("RC_CWD")], cwd.as_os_str());
+    assert!(!environment.contains_key(OsStr::new("PWD")));
+    assert!(!environment.contains_key(OsStr::new("_")));
+
+    let failing = fake_shell(&cwd, "exit 3");
+    let error = shell_env::capture(&failing, &cwd, Path::new(env!("CARGO_BIN_EXE_svcnest")))
+        .await
+        .unwrap_err();
+    assert_eq!(ServiceError::code(&error), "SHELL_ENV_FAILED");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn registered_environment_overrides_the_login_shell_environment() {
+    use tokio::io::AsyncReadExt;
+    let _serial = CHILD_PROCESSES.lock().await;
+    let temp = tempfile::tempdir().unwrap();
+    let mut config = config_at("shell-env", temp.path());
+    config.resolved_executable = fs::canonicalize("/bin/sh").unwrap();
+    config.command = vec![
+        "sh".into(),
+        "-c".into(),
+        "printf '%s %s' \"$FROM_SHELL\" \"$OVERRIDDEN\"".into(),
+    ];
+    config
+        .environment
+        .insert("OVERRIDDEN".into(), "registered".into());
+    let base = svcnest::process::BaseEnvironment::from([
+        ("FROM_SHELL".into(), "shell".into()),
+        ("OVERRIDDEN".into(), "shell".into()),
+    ]);
+    let mut tree = svcnest::process::ProcessTree::spawn(&config, false, &base).unwrap();
+    let mut output = String::new();
+    tree.child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut output)
+        .await
+        .unwrap();
+    assert!(tree.child.wait().await.unwrap().success());
+    assert_eq!(output, "shell registered");
+}
+
+#[test]
+fn configs_without_shell_env_use_the_platform_default() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut text = toml::to_string_pretty(&config_at("legacy", temp.path())).unwrap();
+    text = text
+        .lines()
+        .filter(|line| !line.starts_with("shell_env"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let config: ServiceConfig = toml::from_str(&text).unwrap();
+    assert_eq!(config.shell_env, cfg!(unix));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn installed_shells_load_both_login_and_interactive_rc_files() {
+    use std::os::unix::fs::PermissionsExt;
+    use svcnest::process::shell_env;
+    let _serial = CHILD_PROCESSES.lock().await;
+    let cases = [
+        (
+            "bash",
+            vec![
+                (".profile", "export FROM_LOGIN=bash"),
+                // 一般的な .bashrc と同じく、非対話シェルでは何もしない。
+                (
+                    ".bashrc",
+                    "case $- in *i*) ;; *) return;; esac\nexport FROM_RC=bash",
+                ),
+            ],
+        ),
+        (
+            "zsh",
+            vec![
+                (".zprofile", "export FROM_LOGIN=zsh"),
+                (".zshrc", "export FROM_RC=zsh"),
+            ],
+        ),
+        (
+            "dash",
+            vec![
+                (".profile", "export FROM_LOGIN=dash ENV=\"$HOME/.shrc\""),
+                (".shrc", "export FROM_RC=dash"),
+            ],
+        ),
+    ];
+    let mut tested = 0;
+    for (name, files) in cases {
+        let Some(real) = ["/bin", "/usr/bin"]
+            .iter()
+            .map(|dir| Path::new(dir).join(name))
+            .find(|path| path.is_file())
+        else {
+            continue;
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let home = root.join("home");
+        fs::create_dir(&home).unwrap();
+        for (file, body) in files {
+            fs::write(home.join(file), format!("{body}\n")).unwrap();
+        }
+        // 種類はファイル名で判定するため、同名の wrapper で HOME だけを差し替える。
+        let bin = root.join("bin");
+        fs::create_dir(&bin).unwrap();
+        let shell = bin.join(name);
+        fs::write(
+            &shell,
+            format!(
+                "#!/bin/sh\nHOME='{}' ZDOTDIR='{}' exec '{}' \"$@\"\n",
+                home.display(),
+                home.display(),
+                real.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&shell, fs::Permissions::from_mode(0o755)).unwrap();
+        let environment =
+            shell_env::capture(&shell, &root, Path::new(env!("CARGO_BIN_EXE_svcnest")))
+                .await
+                .unwrap_or_else(|error| panic!("{name}: {error:#}"));
+        assert_eq!(
+            environment
+                .get(OsStr::new("FROM_LOGIN"))
+                .map(|v| v.to_str().unwrap()),
+            Some(name),
+            "{name}"
+        );
+        assert_eq!(
+            environment
+                .get(OsStr::new("FROM_RC"))
+                .map(|v| v.to_str().unwrap()),
+            Some(name),
+            "{name}"
+        );
+        tested += 1;
+    }
+    assert!(tested > 0, "No supported shell is installed");
 }

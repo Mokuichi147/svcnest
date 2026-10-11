@@ -96,10 +96,34 @@ svcnest add api \
 | `--stop-timeout <time>` | 停止要求から強制終了までの待機時間。`1ms`〜`300s`、単位なしは秒 |
 | `--env KEY=VALUE` | 環境変数を保存 |
 | `--env-file <path>` | 起動のたびに読み込む env-file（値は設定へコピーしない） |
+| `--shell <shell>` | macOS / Linux: 環境を読み込むシェル（標準は登録した端末のシェル）。Windows: `.ps1` を実行する PowerShell |
+| `--no-shell-env` | シェルの login / rc ファイルが export する環境を読み込まない（macOS / Linux） |
 | `--enable` | 登録と同時に自動起動を有効化 |
 | `--replace` | 停止中の同名サービスを上書き |
 
-サービス名は `[a-z0-9][a-z0-9._-]{0,63}` です。環境変数は `--env`、env-file、親プロセスの環境の順に優先します。登録時の PATH は自動で保存され、env-file より優先します。
+サービス名は `[a-z0-9][a-z0-9._-]{0,63}` です。環境変数は `--env`、env-file、シェルの環境、daemon の環境の順に優先します。登録時の PATH は自動で保存され、env-file より優先します。
+
+### シェルの環境
+
+macOS / Linux では、端末から起動した場合と同じ環境になるよう、起動のたびにシェルの login / rc ファイルを読み込み、export された環境変数をサービスへ渡します。rc ファイルで別のファイルから読み込む秘密情報も、daemon から起動したサービスへ渡ります。値は設定へ保存せず、再起動のたびに読み直します。
+
+使用するシェルは `--shell` で指定したシェル、登録した端末で動いている対話シェル、passwd のログインシェル、`SHELL`、`/bin/sh` の順に選びます。シェルごとに次のファイルを読み込みます。
+
+| シェル | 起動方法 | 主に読み込むファイル |
+|---|---|---|
+| bash | `bash -l` から `bash -i` を実行 | `/etc/profile`、`~/.bash_profile` または `~/.profile`、`~/.bashrc` |
+| zsh | `zsh -i -l` | `.zshenv`、`.zprofile`、`.zshrc`、`.zlogin` |
+| fish | `fish -i -l` | `config.fish`、`conf.d` |
+| sh / dash / ksh など | `-i -l` | `/etc/profile`、`~/.profile`、`$ENV` |
+| csh / tcsh | `-l`（コマンドは stdin） | `.cshrc` / `.tcshrc`、`.login` |
+| PowerShell | `pwsh -Login -Command` | `/etc/profile`、`~/.profile`、`$PROFILE` |
+
+その他のシェルは `-i -l -c` で起動します。tmux や screen はシェルとして扱いません。
+
+- rc ファイルの出力は破棄し、ログへ記録しません。
+- 10 秒以内に環境を取得できない場合、またはシェルが途中で終了した場合は起動に失敗します。入力待ちや `exec tmux` など、端末を前提とする処理は対話端末の場合だけ実行してください。
+- `svcnest doctor` の `shell-env` で、使用するシェルと取得できるかを確認できます。
+- 不要な場合は `--no-shell-env` で登録するか、設定ファイルの `shell_env` を `false` にします。
 
 ## 再起動とログ
 

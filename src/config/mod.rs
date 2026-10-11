@@ -54,6 +54,11 @@ pub struct ServiceConfig {
     pub restart: RestartPolicy,
     #[serde(default = "default_stop_timeout")]
     pub stop_timeout_ms: u64,
+    #[serde(default = "default_shell_env")]
+    pub shell_env: bool,
+    /// 環境を読み込むシェル。未指定の場合は起動時にログインシェルを選ぶ。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<PathBuf>,
     #[serde(default)]
     pub env_file: Option<PathBuf>,
     #[serde(default)]
@@ -62,6 +67,11 @@ pub struct ServiceConfig {
 
 pub fn default_stop_timeout() -> u64 {
     10_000
+}
+
+/// Unix では端末と同じく、シェルの login / rc ファイルが export する環境で起動する。
+pub fn default_shell_env() -> bool {
+    cfg!(unix)
 }
 
 pub fn validate_name(name: &str) -> Result<()> {
@@ -116,6 +126,7 @@ impl ServiceConfig {
                 .as_ref()
                 .is_some_and(|p| !p.is_absolute())
             || self.env_file.as_ref().is_some_and(|p| !p.is_absolute())
+            || self.shell.as_ref().is_some_and(|p| !p.is_absolute())
         {
             return fail("INVALID_CONFIG", "Config paths must be absolute");
         }

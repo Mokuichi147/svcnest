@@ -504,6 +504,8 @@ fn windows_running_copy_allows_installation_updates_without_stopping_its_tree() 
         enabled: false,
         restart: config::RestartPolicy::Never,
         stop_timeout_ms: 2000,
+        shell_env: false,
+        shell: None,
         env_file: None,
         environment: [
             ("SVCNEST_E2E_MODE".into(), "console".into()),
@@ -1644,6 +1646,8 @@ fn console_paths_are_readable_while_stored_and_json_paths_remain_canonical() {
         enabled: false,
         restart: config::RestartPolicy::Never,
         stop_timeout_ms: 300,
+        shell_env: false,
+        shell: None,
         env_file: Some(fs::canonicalize(&env_file).unwrap()),
         environment: Default::default(),
     };

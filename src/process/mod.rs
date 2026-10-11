@@ -1,15 +1,34 @@
 use crate::{config::ServiceConfig, error::fail, paths::readable_path};
 use anyhow::{Context, Result};
 use std::{
+    collections::BTreeMap,
+    ffi::OsString,
     process::{ExitStatus, Stdio},
     time::{Duration, Instant},
 };
 use tokio::process::{Child, Command};
 
 #[cfg(unix)]
+pub mod shell_env;
+#[cfg(unix)]
 pub mod unix;
 #[cfg(windows)]
 mod windows;
+
+/// 設定の環境変数より優先度の低い、起動ごとに取得する環境。
+pub type BaseEnvironment = BTreeMap<OsString, OsString>;
+
+/// `shell_env` が有効な場合、シェルの login / rc ファイルが export する環境を取得する。
+pub async fn base_environment(config: &ServiceConfig) -> Result<BaseEnvironment> {
+    #[cfg(unix)]
+    if config.shell_env {
+        let executable = std::env::current_exe().context("Cannot locate the svcnest executable")?;
+        let shell = shell_env::select(config.shell.as_deref())?;
+        return shell_env::capture(&shell, &config.cwd, &executable).await;
+    }
+    let _ = config;
+    Ok(BaseEnvironment::new())
+}
 
 pub struct ProcessTree {
     pub child: Child,
@@ -23,9 +42,10 @@ pub struct ProcessTree {
 }
 
 impl ProcessTree {
-    pub fn spawn(config: &ServiceConfig, foreground: bool) -> Result<Self> {
+    pub fn spawn(config: &ServiceConfig, foreground: bool, base: &BaseEnvironment) -> Result<Self> {
         config.validate()?;
         let mut command = Command::new(&config.resolved_executable);
+        command.envs(base);
         // シェルと同じく登録時のコマンド名を argv[0] にする。実行名で動作を切り替える
         // multi-call binary を、symlink 先のパスで登録済みの設定でも正しく起動できる。
         #[cfg(unix)]
