@@ -104,19 +104,27 @@ pub fn missing_executable(paths: &Paths) -> Result<Option<PathBuf>> {
 /// 移動・削除された実行ファイルを参照する登録を、現在の実行ファイルで登録し直す。
 /// 登録は enable / install で利用者が求めたものなので、壊れたままにせず次回のログインに備える。
 pub async fn repair(paths: &Paths) -> Result<()> {
-    let Some(missing) = missing_executable(paths)? else {
+    let missing = missing_executable(paths)?;
+    #[cfg(windows)]
+    let migrate = registered_executables(paths)?
+        .first()
+        .is_some_and(|path| path.file_name() != Some(std::ffi::OsStr::new("svcnest-launcher.exe")));
+    #[cfg(not(windows))]
+    let migrate = false;
+    if missing.is_none() && !migrate {
         return Ok(());
-    };
+    }
     // launchd の再登録は bootout を伴い、登録から起動した daemon を止めるため、停止中だけ行う。
     #[cfg(target_os = "macos")]
     if crate::ipc::ping(paths).await {
         return Ok(());
     }
-    install(paths).await.with_context(|| {
-        format!(
+    install(paths).await.with_context(|| match missing {
+        Some(missing) => format!(
             "Cannot repair the login registration that refers to missing {}",
             crate::paths::readable_path(&missing).display()
-        )
+        ),
+        None => "Cannot migrate the login registration to the windowless launcher".to_owned(),
     })
 }
 
@@ -157,8 +165,10 @@ pub async fn install(paths: &Paths) -> Result<()> {
     let loaded = registered(paths)? && registration_loaded(paths).await;
     #[cfg(any(unix, windows))]
     let source = fs::canonicalize(std::env::current_exe()?)?;
-    #[cfg(any(unix, windows))]
+    #[cfg(unix)]
     let runtime = crate::runtime::prepare(paths, &source)?;
+    #[cfg(windows)]
+    let runtime = crate::runtime::prepare_launcher(paths, &source)?;
     #[cfg(target_os = "macos")]
     let definition = macos::render_runtime(paths, &runtime, &source);
     #[cfg(target_os = "linux")]

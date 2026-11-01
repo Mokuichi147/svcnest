@@ -213,6 +213,17 @@ def main():
             cli("enable", "--now")
             integration.registered()
 
+            if sys.platform == "win32":
+                # 旧 console 起動役が存在していても、更新時に GUI 起動役へ移行する。
+                current = integration.installed.read_text(encoding="utf-16")
+                assert "svcnest-launcher.exe" in current
+                legacy = current.replace("svcnest-launcher.exe", "svcnest.exe")
+                integration.installed.write_text(legacy, encoding="utf-16")
+                execute("schtasks.exe", "/Create", "/TN", integration.target, "/XML", str(integration.installed), "/F")
+                cli("__repair-registration")
+                assert integration.installed.read_text(encoding="utf-16") == current
+                assert "svcnest-launcher.exe" in execute("schtasks.exe", "/Query", "/TN", integration.target, "/XML").stdout
+
             def status():
                 return json.loads(cli("status", "--json", cwd=child).stdout)["services"][0]
 

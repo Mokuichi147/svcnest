@@ -772,7 +772,7 @@ fn os_registration_contains_only_the_daemon_and_escapes_paths() {
         assert!(text.contains("<LogonType>InteractiveToken</LogonType>"));
         assert!(text.contains("<RunLevel>LeastPrivilege</RunLevel>"));
         assert!(!text.contains("HighestAvailable"));
-        let runtime = svcnest::runtime::executable_path(&paths, &executable).unwrap();
+        let runtime = svcnest::runtime::launcher_path(&paths, &executable).unwrap();
         assert!(text.contains(&format!(
             "<Command>{}</Command>",
             platform::xml_escape(&runtime.to_string_lossy())

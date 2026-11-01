@@ -282,7 +282,7 @@ pub fn quote_arg(arg: &str) -> String {
 }
 
 pub fn render(paths: &Paths, executable: &Path) -> Result<String> {
-    let runtime = crate::runtime::executable_path(paths, executable)?;
+    let runtime = crate::runtime::launcher_path(paths, executable)?;
     render_runtime(paths, &runtime, executable)
 }
 

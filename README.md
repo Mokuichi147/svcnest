@@ -165,6 +165,8 @@ exit /b %ERRORLEVEL%
 
 ## 自動起動と保存先
 
+Windows の自動起動は、ターミナルを表示せずにバックグラウンドで動作します。旧版の自動起動登録は、更新後のインストーラー実行時や daemon の起動確認時に自動で移行します。手動で適用する場合は `svcnest daemon install` を実行してください。
+
 OS に登録するのは svcnest の daemon だけです。最初の `enable`、`add --enable`、`daemon install` で daemon をログイン時の自動起動へ登録し、daemon が有効なサービスを起動します。
 
 | OS | 自動起動 | 保存先 |
