@@ -462,6 +462,164 @@ fn windows_background_tree_has_no_console_window_and_stops_gracefully() {
     }
 }
 
+#[cfg(windows)]
+#[test]
+fn windows_launcher_console_probe() {
+    use windows_sys::Win32::System::Console::{AttachConsole, FreeConsole};
+    let Ok(pid) = std::env::var("SVCNEST_PROBE_LAUNCHER_PID") else {
+        return;
+    };
+    // 独立したプロセスで確認し、テスト実行元の console 接続には触れない。
+    unsafe {
+        FreeConsole();
+        assert_eq!(
+            AttachConsole(pid.parse().unwrap()),
+            0,
+            "Launcher has a console"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_launcher_wait_fixture() {
+    if std::env::var_os("SVCNEST_LAUNCHER_FIXTURE").is_some() {
+        println!("launcher-ready");
+        std::io::stdout().flush().unwrap();
+        let mut byte = [0];
+        std::io::stdin().read_exact(&mut byte).unwrap();
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_gui_launcher_never_allocates_a_console() {
+    use std::io::BufRead;
+    use std::os::windows::process::CommandExt;
+
+    // 常駐 daemon を必要としない独立検証。console のあるテスト exe から起動役を作る。
+    let temp = tempfile::tempdir().unwrap();
+    let paths = Paths::discover(Some(temp.path().join("state"))).unwrap();
+    let fixture = std::env::current_exe().unwrap();
+    let launcher = svcnest::runtime::prepare_launcher(&paths, &fixture).unwrap();
+    let mut child = RuntimeChildGuard(
+        Command::new(&launcher)
+            .args(["--exact", "windows_launcher_wait_fixture", "--nocapture"])
+            .env("SVCNEST_LAUNCHER_FIXTURE", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let mut output = std::io::BufReader::new(child.0.stdout.take().unwrap());
+    let mut line = String::new();
+    while !line.contains("launcher-ready") {
+        line.clear();
+        assert_ne!(output.read_line(&mut line).unwrap(), 0);
+    }
+    let mut probe = Command::new(&fixture);
+    probe
+        .args(["--exact", "windows_launcher_console_probe", "--nocapture"])
+        .env("SVCNEST_PROBE_LAUNCHER_PID", child.0.id().to_string())
+        .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    let result = output_with_timeout(&mut probe, Duration::from_secs(10));
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stdout)
+    );
+    assert!(child.0.try_wait().unwrap().is_none());
+    child.0.stdin.take().unwrap().write_all(b"x").unwrap();
+    assert!(wait_for(|| child.0.try_wait().unwrap()).success());
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_login_launcher_starts_without_a_console_and_survives_missing_source() {
+    use std::os::windows::process::CommandExt;
+
+    let sandbox = Sandbox::new();
+    let installed = sandbox.temp.path().join("installed svcnest.exe");
+    fs::copy(CLI, &installed).unwrap();
+    let launcher = svcnest::runtime::prepare_launcher(&sandbox.paths, &installed).unwrap();
+    assert_eq!(
+        launcher,
+        svcnest::runtime::launcher_path(&sandbox.paths, &installed).unwrap()
+    );
+    assert_eq!(fs::read(&installed).unwrap(), fs::read(CLI).unwrap());
+    sandbox.add("api", "console", "never", &sandbox.project);
+    sandbox.ok(&["daemon", "stop"]);
+    let mut config = config::load_named(&sandbox.paths, "api").unwrap();
+    config.enabled = true;
+    config.stop_timeout_ms = 2000;
+    config::save(&sandbox.paths, &config).unwrap();
+
+    for source_exists in [true, false] {
+        if !source_exists {
+            fs::remove_file(&installed).unwrap();
+        }
+        for mode in ["console", "console-child"] {
+            let _ = fs::remove_file(
+                sandbox
+                    .temp
+                    .path()
+                    .join("api-pids")
+                    .with_extension(format!("{mode}.json")),
+            );
+        }
+        let mut bootstrap = RuntimeChildGuard(
+            // Task Scheduler と同じく、画面を隠す creation flags は指定しない。
+            Command::new(&launcher)
+                .arg("--home")
+                .arg(&sandbox.home)
+                .args(["daemon", "serve", "--source-executable"])
+                .arg(&installed)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        wait_for(|| (sandbox.state("api") == ServiceState::Running).then_some(()));
+        assert!(bootstrap.0.try_wait().unwrap().is_none());
+        let mut probe = Command::new(std::env::current_exe().unwrap());
+        probe
+            .args(["--exact", "windows_launcher_console_probe", "--nocapture"])
+            .env("SVCNEST_PROBE_LAUNCHER_PID", bootstrap.0.id().to_string())
+            .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+        let result = output_with_timeout(&mut probe, Duration::from_secs(10));
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stdout)
+        );
+        sandbox.wait_pids("api", if source_exists { 2 } else { 4 });
+        for mode in ["console", "console-child"] {
+            let path = sandbox
+                .temp
+                .path()
+                .join("api-pids")
+                .with_extension(format!("{mode}.json"));
+            let report: serde_json::Value = wait_for(|| {
+                fs::read(&path)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            });
+            assert_eq!(report["has_console_window"], false);
+        }
+        sandbox.ok(&["stop"]);
+        assert_eq!(
+            sandbox.snapshot(&["status", "api", "--json"]).services[0]
+                .runtime
+                .last_exit_code,
+            Some(0)
+        );
+        sandbox.ok(&["daemon", "stop"]);
+        assert!(wait_for(|| bootstrap.0.try_wait().unwrap()).success());
+    }
+}
+
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 struct RuntimeChildGuard(std::process::Child);
 

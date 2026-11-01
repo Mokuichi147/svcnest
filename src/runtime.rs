@@ -76,28 +76,107 @@ fn matches(path: &Path, bytes: &[u8]) -> Result<bool> {
 pub fn prepare(paths: &Paths, source: &Path) -> Result<PathBuf> {
     let bytes = source_bytes(source)?;
     let path = destination(paths, &bytes);
+    publish(paths, &path, &bytes)?;
+    Ok(path)
+}
+
+fn publish(paths: &Paths, path: &Path, bytes: &[u8]) -> Result<()> {
     private_dir(&paths.home.join("bin"))?;
     let directory = path.parent().context("Runtime executable has no parent")?;
     private_dir(directory)?;
-    if matches(&path, &bytes)? {
-        return Ok(path);
+    if matches(path, bytes)? {
+        return Ok(());
     }
     let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
-    temporary.write_all(&bytes)?;
+    temporary.write_all(bytes)?;
     #[cfg(unix)]
     temporary
         .as_file()
         .set_permissions(fs::Permissions::from_mode(0o700))?;
     temporary.as_file().sync_all()?;
-    if let Err(error) = temporary.persist_noclobber(&path) {
+    if let Err(error) = temporary.persist_noclobber(path) {
         // 同時起動した別 CLI が先に配置した場合は、その同じビルドを再利用する。
-        if !matches(&path, &bytes)? {
+        if !matches(path, bytes)? {
             return Err(error.error).context("Cannot publish runtime executable");
         }
     }
     #[cfg(unix)]
     fs::File::open(directory)?.sync_all()?;
-    Ok(path)
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn launcher_path(paths: &Paths, source: &Path) -> Result<PathBuf> {
+    Ok(executable_path(paths, source)?.with_file_name("svcnest-launcher.exe"))
+}
+
+#[cfg(windows)]
+pub fn prepare_launcher(paths: &Paths, source: &Path) -> Result<PathBuf> {
+    // CLI と runner は console アプリのまま残す。Task Scheduler が直接実行する
+    // 起動役だけ GUI subsystem にして、プロセス作成時から画面を割り当てない。
+    let bytes = source_bytes(source)?;
+    let runtime = destination(paths, &bytes);
+    publish(paths, &runtime, &bytes)?;
+    let launcher = runtime.with_file_name("svcnest-launcher.exe");
+    publish(paths, &launcher, &windowless_image(bytes)?)?;
+    Ok(launcher)
+}
+
+#[cfg(windows)]
+fn windowless_image(mut bytes: Vec<u8>) -> Result<Vec<u8>> {
+    // PE32 / PE32+ とも Subsystem は optional header の offset 68。
+    // https://learn.microsoft.com/windows/win32/debug/pe-format
+    ensure!(bytes.starts_with(b"MZ"), "Runtime source is not a PE image");
+    let offset = bytes.get(0x3c..0x40).context("Missing PE header offset")?;
+    let pe = u32::from_le_bytes(offset.try_into()?) as usize;
+    let optional = pe.checked_add(24).context("Invalid PE header offset")?;
+    let header = bytes.get(pe..optional).context("Missing PE header")?;
+    ensure!(&header[..4] == b"PE\0\0", "Invalid PE signature");
+    let size = u16::from_le_bytes(header[20..22].try_into()?) as usize;
+    ensure!(size >= 70, "Missing PE subsystem field");
+    let end = optional
+        .checked_add(size)
+        .context("Invalid PE header size")?;
+    let header = bytes
+        .get_mut(optional..end)
+        .context("Missing PE optional header")?;
+    let magic = u16::from_le_bytes(header[..2].try_into()?);
+    ensure!(
+        matches!(magic, 0x10b | 0x20b),
+        "Unsupported PE optional header"
+    );
+    ensure!(
+        u16::from_le_bytes(header[68..70].try_into()?) == 3,
+        "Runtime source is not a console application"
+    );
+    header[68..70].copy_from_slice(&2u16.to_le_bytes());
+    // チェックサムはユーザーアプリでは任意。元イメージの値は変更後には使わない。
+    header[64..68].fill(0);
+    Ok(bytes)
+}
+
+#[cfg(windows)]
+fn registered_runtime(paths: &Paths) -> Result<PathBuf> {
+    let current = fs::canonicalize(std::env::current_exe()?)?;
+    if is_current_executable(paths)? {
+        return Ok(current);
+    }
+    // 更新元がなくても、起動役と一緒に公開した console runtime で起動する。
+    let runtime = current.with_file_name("svcnest.exe");
+    let bytes = source_bytes(&runtime)?;
+    ensure!(
+        runtime == destination(paths, &bytes),
+        "Invalid registered runtime path"
+    );
+    ensure!(
+        current == runtime.with_file_name("svcnest-launcher.exe"),
+        "Invalid registered launcher path"
+    );
+    ensure!(
+        source_bytes(&current)? == windowless_image(bytes)?,
+        "Invalid registered launcher image"
+    );
+    Ok(runtime)
 }
 
 pub fn is_current_executable(paths: &Paths) -> Result<bool> {
@@ -106,6 +185,7 @@ pub fn is_current_executable(paths: &Paths) -> Result<bool> {
 }
 
 pub async fn serve_registered(paths: &Paths, source: &Path) -> Result<i32> {
+    #[cfg(unix)]
     let executable = if source.exists() || !is_current_executable(paths)? {
         prepare(paths, source)?
     } else {
@@ -116,6 +196,12 @@ pub async fn serve_registered(paths: &Paths, source: &Path) -> Result<i32> {
             source.display()
         );
         fs::canonicalize(std::env::current_exe()?)?
+    };
+    #[cfg(windows)]
+    let executable = if source.exists() {
+        prepare(paths, source)?
+    } else {
+        registered_runtime(paths)?
     };
     #[cfg(unix)]
     {
@@ -156,6 +242,30 @@ pub async fn serve_registered(paths: &Paths, source: &Path) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn launcher_changes_only_the_pe_subsystem_and_checksum() {
+        for magic in [0x10bu16, 0x20b] {
+            let mut image = vec![0u8; 256];
+            image[..2].copy_from_slice(b"MZ");
+            image[0x3c..0x40].copy_from_slice(&64u32.to_le_bytes());
+            image[64..68].copy_from_slice(b"PE\0\0");
+            image[84..86].copy_from_slice(&128u16.to_le_bytes());
+            image[88..90].copy_from_slice(&magic.to_le_bytes());
+            image[152..156].copy_from_slice(&123u32.to_le_bytes());
+            image[156..158].copy_from_slice(&3u16.to_le_bytes());
+            let mut expected = image.clone();
+            expected[152..156].fill(0);
+            expected[156..158].copy_from_slice(&2u16.to_le_bytes());
+            assert_eq!(windowless_image(image.clone()).unwrap(), expected);
+            for length in [0, 2, 63, 87, 157, 215] {
+                assert!(windowless_image(image[..length].to_vec()).is_err());
+            }
+            image[0x3c..0x40].copy_from_slice(&u32::MAX.to_le_bytes());
+            assert!(windowless_image(image).is_err());
+        }
+    }
 
     #[test]
     fn builds_are_immutable_and_identified_by_contents() {
